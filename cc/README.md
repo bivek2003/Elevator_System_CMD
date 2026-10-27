@@ -17,5 +17,4 @@ Removed per class feedback: system ON/OFF, Go To floor, floor-reset/auto-door ta
 - `Main`              – wires view and manager. To use a Software Bus manager, implement `Manager`
   and change only `Main.createManager()`; the view and API are untouched.
 
-Method names are illustrative (not professor-specified). No Software Bus schema is hardcoded.
 Out of service: the elevator is sent to the bottom floor, opens its doors, then reports out of service.
