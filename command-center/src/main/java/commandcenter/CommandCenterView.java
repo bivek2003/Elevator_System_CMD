@@ -2,6 +2,7 @@ package commandcenter;
 
 import java.util.Locale;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicBoolean;
 import javafx.application.Platform;
 import javafx.css.PseudoClass;
 import javafx.geometry.HPos;
@@ -48,6 +49,9 @@ public class CommandCenterView implements CommandCenterApi {
         DoorStatus door = DoorStatus.CLOSED;
         boolean obstruction, overload;
         boolean pending;                             // service command sent, new status not reported yet
+        ServiceStatus pendingTarget;
+        final AtomicBoolean takeOutOfService = new AtomicBoolean();
+        final AtomicBoolean returnToService = new AtomicBoolean();
 
         final Label title;
         final Button serviceButton = button("");
@@ -73,7 +77,8 @@ public class CommandCenterView implements CommandCenterApi {
     private final Label fireAlarm = box("Fire Alarm");
     private final Elevator[] elevators = new Elevator[ELEVATORS];
     private FireStatus fire = FireStatus.NORMAL;
-    private volatile CommandListener listener;
+    private final AtomicBoolean fireResetPending = new AtomicBoolean();
+    private final AtomicBoolean fireTestPending = new AtomicBoolean();
 
     public CommandCenterView() {
         root.getStyleClass().add("command-center");
@@ -87,8 +92,8 @@ public class CommandCenterView implements CommandCenterApi {
         }
 
         // Row 0: fire controls, one box per column
-        fireReset.setOnAction(ev -> { CommandListener l = listener; if (l != null) l.onFireReset(); });
-        fireTest.setOnAction(ev -> { CommandListener l = listener; if (l != null) l.onFireTest(); });
+        fireReset.setOnAction(ev -> fireResetPending.set(true));
+        fireTest.setOnAction(ev -> fireTestPending.set(true));
         root.addRow(0, fireReset, fireTest, box(""), fireAlarm);
 
         // Rows 1..10: one column per elevator, the same rows in every column
@@ -110,9 +115,19 @@ public class CommandCenterView implements CommandCenterApi {
 
     public Parent getRoot() { return root; }
 
-    @Override public void setCommandListener(CommandListener l) { this.listener = l; }
-
     // ---- CommandCenterApi -------------------------------------------------
+
+    @Override public boolean fireReset() { return fireResetPending.getAndSet(false); }
+
+    @Override public boolean fireTest() { return fireTestPending.getAndSet(false); }
+
+    @Override public boolean takeOutOfService(int id) {
+        return elevator(id).takeOutOfService.getAndSet(false);
+    }
+
+    @Override public boolean returnToService(int id) {
+        return elevator(id).returnToService.getAndSet(false);
+    }
 
     @Override public void setCurrentFloor(int id, int floor) {
         Elevator e = elevator(id);
@@ -141,11 +156,15 @@ public class CommandCenterView implements CommandCenterApi {
         ui(() -> { e.overload = active; render(e); });
     }
 
-    /** Also ends a pending service command for that elevator. */
+    /** Ends a pending service command only when its requested state is confirmed. */
     @Override public void setServiceStatus(int id, ServiceStatus s) {
         Elevator e = elevator(id);
         Objects.requireNonNull(s);
-        ui(() -> { e.service = s; e.pending = false; render(e); });
+        ui(() -> {
+            e.service = s;
+            if (s == e.pendingTarget) { e.pending = false; e.pendingTarget = null; }
+            render(e);
+        });
     }
 
     @Override public void setFireStatus(FireStatus s) {
@@ -157,12 +176,13 @@ public class CommandCenterView implements CommandCenterApi {
 
     /** Asks the manager for the opposite service state; the button stays lit amber until it reports back. */
     private void onServiceButton(Elevator e) {
-        CommandListener l = listener;
-        if (l == null || e.pending) return;
-        e.pending = true;   // before the call: the manager may report back before onServiceCommand returns
+        if (e.pending) return;
+        e.pending = true;
+        e.pendingTarget = e.service == ServiceStatus.IN_SERVICE
+                ? ServiceStatus.OUT_OF_SERVICE : ServiceStatus.IN_SERVICE;
         render(e);
-        l.onServiceCommand(e.id, e.service == ServiceStatus.IN_SERVICE
-                ? ServiceStatus.OUT_OF_SERVICE : ServiceStatus.IN_SERVICE);
+        if (e.service == ServiceStatus.IN_SERVICE) e.takeOutOfService.set(true);
+        else e.returnToService.set(true);
     }
 
     private static void render(Elevator e) {
