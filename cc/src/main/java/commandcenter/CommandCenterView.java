@@ -1,185 +1,263 @@
 package commandcenter;
 
+import java.util.Locale;
+import java.util.Objects;
 import javafx.application.Platform;
+import javafx.css.PseudoClass;
+import javafx.geometry.HPos;
 import javafx.geometry.Insets;
-import javafx.geometry.Pos;
+import javafx.scene.Node;
+import javafx.scene.Parent;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
+import javafx.scene.control.Labeled;
 import javafx.scene.layout.ColumnConstraints;
 import javafx.scene.layout.GridPane;
-import javafx.scene.layout.Priority;
-import javafx.scene.layout.StackPane;
-import javafx.scene.paint.Color;
 import javafx.scene.shape.Circle;
 import javafx.scene.shape.Polygon;
 
-/** JavaFX Command Center screen. All widgets sit on one GridPane; the API methods are thread-safe. */
+/**
+ * JavaFX Command Center screen: one grid with the fire controls in the top row and one column per
+ * elevator below it. Colours live in command-center.css; this class only gives each box and button
+ * a {@link Tone}. The API methods are thread-safe.
+ */
 public class CommandCenterView implements CommandCenterApi {
-    private static final String CSS_LABEL = "-fx-text-fill: #555;";
+
+    /**
+     * What a box or button means, which sets its colour. OK is green: moving, or the button that
+     * restores normal. CAUTION is amber: a warning, or a command still in progress. ALARM is red.
+     * MUTED dims an out-of-service elevator. PLAIN has no colour.
+     */
+    private enum Tone {
+        PLAIN, OK, CAUTION, ALARM, MUTED;
+
+        final PseudoClass pseudoClass = PseudoClass.getPseudoClass(name().toLowerCase(Locale.ROOT));
+    }
+
+    /** Set on the arrow of the current direction, and on an obstruction or overload box while active. */
+    private static final PseudoClass ON = PseudoClass.getPseudoClass("on");
+
+    private static final double COLUMN_WIDTH = 180;
+
+    /** One elevator: its last reported state and the widgets in its column. */
+    private static final class Elevator {
+        final int id;
+        ServiceStatus service = ServiceStatus.IN_SERVICE;
+        int floor;                                   // 0 until the manager reports one
+        Direction direction = Direction.NONE;
+        DoorStatus door = DoorStatus.CLOSED;
+        boolean obstruction, overload;
+        boolean pending;                             // service command sent, new status not reported yet
+
+        final Label title;
+        final Button serviceButton = button("");
+        final Polygon upArrow = arrow(true), downArrow = arrow(false);
+        final Label floorDisplay = label("", "floor-display");
+        final Label directionBox = box(""), spacerBox = box(""), doorBox = box(""),
+                obstructionBox = lampBox("Obstruction"), overloadBox = lampBox("Overload");
+
+        Elevator(int id) {
+            this.id = id;
+            title = label("Elevator " + id, "elevator-title");
+        }
+
+        /** The column from top to bottom. */
+        Node[] column() {
+            return new Node[] {title, serviceButton, upArrow, floorDisplay, downArrow,
+                    directionBox, spacerBox, doorBox, obstructionBox, overloadBox};
+        }
+    }
 
     private final GridPane root = new GridPane();
-    private final Label fireLabel = new Label("Fire: Normal");
-    private final Panel[] panels = new Panel[ELEVATORS];
-    private CommandListener listener;
-
-    private final class Panel {
-        final int id;
-        final Label title;
-        final Polygon up = arrow(true), down = arrow(false);
-        final Label floor = new Label("-");
-        final Label dirText = new Label("Stopped");
-        final Label doorText = new Label("Door: Closed");
-        final Circle obstruction = lamp(), overload = lamp();
-        final Button service = new Button("Take out of service");
-        ServiceStatus status = ServiceStatus.IN_SERVICE;
-        boolean pending;
-
-        Panel(int id) {
-            this.id = id;
-            title = new Label("Elevator " + id);
-            title.setStyle("-fx-font-weight: bold; -fx-font-size: 14px;");
-            floor.setStyle("-fx-background-color: #222; -fx-text-fill: white; -fx-font-size: 36px; -fx-font-weight: bold;");
-            floor.setMinSize(64, 64);
-            floor.setAlignment(Pos.CENTER);
-            service.setMaxWidth(Double.MAX_VALUE);
-            service.setOnAction(e -> {
-                if (listener == null) return;
-                listener.onServiceCommand(id, status == ServiceStatus.IN_SERVICE
-                        ? ServiceStatus.OUT_OF_SERVICE : ServiceStatus.IN_SERVICE);
-            });
-        }
-    }
+    private final Button fireReset = button("Fire Reset"), fireTest = button("Fire Test");
+    private final Label fireAlarm = box("Fire Alarm");
+    private final Elevator[] elevators = new Elevator[ELEVATORS];
+    private FireStatus fire = FireStatus.NORMAL;
+    private volatile CommandListener listener;
 
     public CommandCenterView() {
-        root.setHgap(12);
-        root.setVgap(8);
-        root.setPadding(new Insets(14));
-        root.setStyle("-fx-background-color: #f4f4f4;");
+        root.getStyleClass().add("command-center");
+        root.getStylesheets().add(Objects.requireNonNull(
+                CommandCenterView.class.getResource("command-center.css"), "command-center.css is missing")
+                .toExternalForm());
         for (int c = 0; c < ELEVATORS; c++) {
-            ColumnConstraints cc = new ColumnConstraints(170);
-            cc.setHgrow(Priority.NEVER);
-            root.getColumnConstraints().add(cc);
+            ColumnConstraints column = new ColumnConstraints(COLUMN_WIDTH);
+            column.setHalignment(HPos.CENTER);
+            root.getColumnConstraints().add(column);
         }
 
-        // Row 0: top bar (fire controls and status)
-        Button fireTest = new Button("Fire Test");
-        Button fireReset = new Button("Fire Reset");
-        fireTest.setMaxWidth(Double.MAX_VALUE);
-        fireReset.setMaxWidth(Double.MAX_VALUE);
-        fireTest.setOnAction(e -> { if (listener != null) listener.onFireTest(); });
-        fireReset.setOnAction(e -> { if (listener != null) listener.onFireReset(); });
-        fireLabel.setStyle("-fx-font-weight: bold;");
-        fireLabel.setMaxWidth(Double.MAX_VALUE);
-        fireLabel.setAlignment(Pos.CENTER);
-        root.add(fireTest, 0, 0);
-        root.add(fireReset, 1, 0);
-        root.add(fireLabel, 2, 0, 2, 1);
+        // Row 0: fire controls, one box per column
+        fireReset.setOnAction(ev -> { CommandListener l = listener; if (l != null) l.onFireReset(); });
+        fireTest.setOnAction(ev -> { CommandListener l = listener; if (l != null) l.onFireTest(); });
+        root.addRow(0, fireReset, fireTest, box(""), fireAlarm);
 
-        // Rows 1..8: one column per elevator, identical row layout in each column
+        // Rows 1..10: one column per elevator, the same rows in every column
         for (int i = 0; i < ELEVATORS; i++) {
-            Panel p = panels[i] = new Panel(i + 1);
-            int col = i;
-            root.add(center(p.title), col, 1);
-            root.add(center(p.up), col, 2);
-            root.add(center(p.floor), col, 3);
-            root.add(center(p.down), col, 4);
-            root.add(center(p.dirText), col, 5);
-            root.add(center(p.doorText), col, 6);
-            root.add(center(row(p.obstruction, "Obstruction", p.overload, "Overload")), col, 7);
-            root.add(p.service, col, 8);
+            Elevator e = elevators[i] = new Elevator(i + 1);
+            e.serviceButton.setOnAction(ev -> onServiceButton(e));
+            GridPane.setMargin(e.title, new Insets(18, 0, 0, 0));   // space below the fire row
+            GridPane.setMargin(e.upArrow, new Insets(6, 0, 0, 0));
+            GridPane.setMargin(e.directionBox, new Insets(6, 0, 0, 0));
+            Node[] column = e.column();
+            for (int r = 0; r < column.length; r++) {
+                root.add(column[r], i, r + 1);
+            }
         }
-        for (int i = 1; i <= ELEVATORS; i++) {
-            render(i);
-        }
+
+        renderFire();
+        for (Elevator e : elevators) render(e);
     }
 
-    public GridPane getRoot() { return root; }
+    public Parent getRoot() { return root; }
 
     @Override public void setCommandListener(CommandListener l) { this.listener = l; }
 
     // ---- CommandCenterApi -------------------------------------------------
 
     @Override public void setCurrentFloor(int id, int floor) {
-        ui(() -> panel(id).floor.setText(Integer.toString(floor)));
+        Elevator e = elevator(id);
+        ui(() -> { e.floor = floor; render(e); });
     }
 
     @Override public void setDirection(int id, Direction d) {
-        ui(() -> {
-            Panel p = panel(id);
-            p.up.setFill(d == Direction.UP ? Color.BLACK : Color.WHITE);
-            p.down.setFill(d == Direction.DOWN ? Color.BLACK : Color.WHITE);
-            p.dirText.setText(switch (d) { case UP -> "Up"; case DOWN -> "Down"; case NONE -> "Stopped"; });
-        });
+        Elevator e = elevator(id);
+        Objects.requireNonNull(d);
+        ui(() -> { e.direction = d; render(e); });
     }
 
     @Override public void setDoorStatus(int id, DoorStatus s) {
-        ui(() -> panel(id).doorText.setText(s == DoorStatus.OPEN ? "Door: Open" : "Door: Closed"));
+        Elevator e = elevator(id);
+        Objects.requireNonNull(s);
+        ui(() -> { e.door = s; render(e); });
     }
 
     @Override public void setObstruction(int id, boolean active) {
-        ui(() -> panel(id).obstruction.setFill(active ? Color.ORANGE : Color.WHITE));
+        Elevator e = elevator(id);
+        ui(() -> { e.obstruction = active; render(e); });
     }
 
     @Override public void setOverload(int id, boolean active) {
-        ui(() -> panel(id).overload.setFill(active ? Color.ORANGE : Color.WHITE));
+        Elevator e = elevator(id);
+        ui(() -> { e.overload = active; render(e); });
     }
 
+    /** Also ends a pending service command for that elevator. */
     @Override public void setServiceStatus(int id, ServiceStatus s) {
-        ui(() -> { panel(id).status = s; render(id); });
+        Elevator e = elevator(id);
+        Objects.requireNonNull(s);
+        ui(() -> { e.service = s; e.pending = false; render(e); });
     }
 
     @Override public void setFireStatus(FireStatus s) {
-        ui(() -> {
-            fireLabel.setText(switch (s) { case NORMAL -> "Fire: Normal"; case TEST -> "Fire: TEST"; case ALARM -> "Fire: ALARM"; });
-            fireLabel.setStyle("-fx-font-weight: bold; -fx-text-fill: " + (s == FireStatus.NORMAL ? "#222" : "#c00") + ";");
+        Objects.requireNonNull(s);
+        ui(() -> { fire = s; renderFire(); });
+    }
+
+    // ---- behaviour ----------------------------------------------------------
+
+    /** Asks the manager for the opposite service state; the button stays lit amber until it reports back. */
+    private void onServiceButton(Elevator e) {
+        CommandListener l = listener;
+        if (l == null || e.pending) return;
+        e.pending = true;   // before the call: the manager may report back before onServiceCommand returns
+        render(e);
+        l.onServiceCommand(e.id, e.service == ServiceStatus.IN_SERVICE
+                ? ServiceStatus.OUT_OF_SERVICE : ServiceStatus.IN_SERVICE);
+    }
+
+    private static void render(Elevator e) {
+        boolean out = e.service == ServiceStatus.OUT_OF_SERVICE;
+        Tone dim = out ? Tone.MUTED : Tone.PLAIN;   // an out-of-service column is dimmed
+
+        if (e.pending) {
+            show(e.serviceButton, out ? "Returning to service…" : "Taking out of service…", Tone.CAUTION);
+        } else {
+            show(e.serviceButton, out ? "Return to service" : "Take out of service", out ? Tone.OK : Tone.PLAIN);
+        }
+        e.serviceButton.setDisable(e.pending);
+
+        e.upArrow.pseudoClassStateChanged(ON, e.direction == Direction.UP);
+        e.downArrow.pseudoClassStateChanged(ON, e.direction == Direction.DOWN);
+        setTone(e.upArrow, dim);
+        setTone(e.downArrow, dim);
+        show(e.floorDisplay, e.floor > 0 ? Integer.toString(e.floor) : "–", dim);
+
+        show(e.directionBox, switch (e.direction) {
+            case UP -> "Up";
+            case DOWN -> "Down";
+            case NONE -> "Stopped";
+        }, out ? Tone.MUTED : e.direction == Direction.NONE ? Tone.PLAIN : Tone.OK);
+        setTone(e.spacerBox, dim);
+        show(e.doorBox, e.door == DoorStatus.OPEN ? "Door: Open" : "Door: Closed", dim);
+        showLamp(e.obstructionBox, e.obstruction, out);
+        showLamp(e.overloadBox, e.overload, out);
+    }
+
+    private void renderFire() {
+        setTone(fireAlarm, switch (fire) {
+            case NORMAL -> Tone.PLAIN;
+            case TEST -> Tone.CAUTION;
+            case ALARM -> Tone.ALARM;
         });
+        setTone(fireTest, fire == FireStatus.TEST ? Tone.CAUTION : Tone.PLAIN);     // lit while the test runs
+        setTone(fireReset, fire == FireStatus.NORMAL ? Tone.PLAIN : Tone.OK);       // lit when there is something to reset
     }
 
-    // ---- helpers ----------------------------------------------------------
+    // ---- helpers ------------------------------------------------------------
 
-    private void render(int id) {
-        Panel p = panel(id);
-        boolean in = p.status == ServiceStatus.IN_SERVICE;
-        p.service.setText(in ? "Take out of service" : "Return to service");
-        p.title.setText("Elevator " + id + (in ? "" : " (out of service)"));
-        p.title.setOpacity(in ? 1 : 0.5);
-        p.floor.setOpacity(in ? 1 : 0.5);
-    }
-
-    private Panel panel(int id) {
+    private Elevator elevator(int id) {
         if (id < 1 || id > ELEVATORS) throw new IllegalArgumentException("elevator " + id);
-        return panels[id - 1];
+        return elevators[id - 1];
     }
 
     private static void ui(Runnable r) {
         if (Platform.isFxApplicationThread()) r.run(); else Platform.runLater(r);
     }
 
-    private static StackPane center(javafx.scene.Node n) {
-        StackPane sp = new StackPane(n);
-        sp.setAlignment(Pos.CENTER);
-        return sp;
+    private static void show(Labeled node, String text, Tone tone) {
+        node.setText(text);
+        setTone(node, tone);
     }
 
-    private static javafx.scene.layout.HBox row(Circle a, String an, Circle b, String bn) {
-        Label la = new Label(an), lb = new Label(bn);
-        la.setStyle(CSS_LABEL);
-        lb.setStyle(CSS_LABEL);
-        javafx.scene.layout.HBox h = new javafx.scene.layout.HBox(4, a, la, b, lb);
-        h.setAlignment(Pos.CENTER);
-        return h;
+    private static void showLamp(Label box, boolean on, boolean muted) {
+        box.pseudoClassStateChanged(ON, on);
+        setTone(box, muted ? Tone.MUTED : on ? Tone.CAUTION : Tone.PLAIN);
     }
 
-    private static Circle lamp() {
-        Circle c = new Circle(6, Color.WHITE);
-        c.setStroke(Color.BLACK);
-        return c;
+    private static void setTone(Node node, Tone tone) {
+        for (Tone t : Tone.values()) node.pseudoClassStateChanged(t.pseudoClass, t == tone);
+    }
+
+    private static Label label(String text, String styleClass) {
+        Label label = new Label(text);
+        label.getStyleClass().add(styleClass);
+        return label;
+    }
+
+    private static Label box(String text) {
+        Label box = label(text, "box");
+        box.setMaxWidth(Double.MAX_VALUE);
+        return box;
+    }
+
+    private static Label lampBox(String text) {
+        Circle lamp = new Circle(7);
+        lamp.getStyleClass().add("lamp");
+        Label box = box(text);
+        box.setGraphic(lamp);
+        return box;
     }
 
     private static Polygon arrow(boolean up) {
-        Polygon p = up ? new Polygon(0, 22, 26, 22, 13, 0) : new Polygon(0, 0, 26, 0, 13, 22);
-        p.setFill(Color.WHITE);
-        p.setStroke(Color.BLACK);
+        Polygon p = up ? new Polygon(0, 26, 42, 26, 21, 0) : new Polygon(0, 0, 42, 0, 21, 26);
+        p.getStyleClass().add("dir-arrow");
         return p;
+    }
+
+    private static Button button(String text) {
+        Button b = new Button(text);
+        b.getStyleClass().add("cc-button");
+        b.setMaxWidth(Double.MAX_VALUE);
+        return b;
     }
 }
