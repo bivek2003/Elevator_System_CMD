@@ -1,7 +1,7 @@
 package commandcenter;
 
 /**
- * Incoming status updates: a manager calls these to update the screen.
+ * Status updates and polling for operator actions.
  * Implementations must be safe to call from any thread.
  * Elevator ids are 1..{@link #ELEVATORS}.
  */
@@ -17,6 +17,14 @@ public interface CommandCenterApi {
     void setServiceStatus(int elevatorId, ServiceStatus status);
     void setFireStatus(FireStatus status);
 
-    /** Register the receiver of operator commands. */
-    void setCommandListener(CommandListener listener);
+    /**
+     * Poll operator actions. Each method atomically returns and clears its pending flag:
+     * true once after a press, then false until the next press. Repeated presses before
+     * a poll are combined into one pending action. Polling does not change reported status.
+     * A single manager consumes these actions and forwards them to the software bus.
+     */
+    boolean fireReset();
+    boolean fireTest();
+    boolean takeOutOfService(int elevatorId);
+    boolean returnToService(int elevatorId);
 }

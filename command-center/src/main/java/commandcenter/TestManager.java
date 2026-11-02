@@ -22,10 +22,15 @@ public class TestManager implements Manager {
     }
 
     private final Random rnd = new Random();
+    private final boolean simulateFaults;
     private final Car[] cars = new Car[CommandCenterApi.ELEVATORS];
     private CommandCenterApi api;
     private ScheduledExecutorService exec;
     private FireStatus fire = FireStatus.NORMAL;
+
+    public TestManager() { this(true); }
+
+    TestManager(boolean simulateFaults) { this.simulateFaults = simulateFaults; }
 
     @Override
     public synchronized void start(CommandCenterApi api) {
@@ -52,15 +57,13 @@ public class TestManager implements Manager {
     }
 
     /** Fire test: elevators behave as in fire mode (go to the bottom floor, doors open) until reset. */
-    @Override
-    public synchronized void onFireTest() {
+    private void onFireTest() {
         fire = FireStatus.TEST;
         api.setFireStatus(fire);
         for (Car c : cars) recall(c);
     }
 
-    @Override
-    public synchronized void onFireReset() {
+    private void onFireReset() {
         fire = FireStatus.NORMAL;
         api.setFireStatus(fire);
     }
@@ -69,8 +72,7 @@ public class TestManager implements Manager {
      * Taking out of service does not stop the elevator: it travels to the bottom floor and opens
      * its doors, and only then is reported out of service.
      */
-    @Override
-    public synchronized void onServiceCommand(int id, ServiceStatus target) {
+    private void onServiceCommand(int id, ServiceStatus target) {
         Car c = cars[id - 1];
         if (target == ServiceStatus.OUT_OF_SERVICE) {
             c.inService = false;
@@ -98,6 +100,12 @@ public class TestManager implements Manager {
 
     private synchronized void tick() {
         try {
+            if (api.fireTest()) onFireTest();
+            if (api.fireReset()) onFireReset();
+            for (Car c : cars) {
+                if (api.takeOutOfService(c.id)) onServiceCommand(c.id, ServiceStatus.OUT_OF_SERVICE);
+                if (api.returnToService(c.id)) onServiceCommand(c.id, ServiceStatus.IN_SERVICE);
+            }
             for (Car c : cars) step(c);
         } catch (RuntimeException e) {
             e.printStackTrace();
@@ -107,7 +115,7 @@ public class TestManager implements Manager {
     private boolean held(Car c) { return !c.inService || fire != FireStatus.NORMAL; }
 
     private void step(Car c) {
-        randomFaults(c, !held(c));
+        if (simulateFaults) randomFaults(c, !held(c));
 
         if (c.door == DoorStatus.OPEN) {
             if (c.obstruction || c.overload) return;          // doors stay open while a warning is active
