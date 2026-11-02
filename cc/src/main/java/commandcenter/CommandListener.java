@@ -4,6 +4,10 @@ package commandcenter;
 public interface CommandListener {
     void onFireTest();
     void onFireReset();
-    /** @param target IN_SERVICE = return to service, OUT_OF_SERVICE = take out of service */
+    /**
+     * The screen shows the command as in progress until the manager calls
+     * {@link CommandCenterApi#setServiceStatus} for that elevator.
+     * @param target IN_SERVICE = return to service, OUT_OF_SERVICE = take out of service
+     */
     void onServiceCommand(int elevatorId, ServiceStatus target);
 }
