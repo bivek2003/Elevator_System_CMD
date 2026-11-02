@@ -107,7 +107,7 @@ public class TestManager implements Manager {
     private boolean held(Car c) { return !c.inService || fire != FireStatus.NORMAL; }
 
     private void step(Car c) {
-        if (c.inService && fire == FireStatus.NORMAL) randomFaults(c);
+        randomFaults(c, !held(c));
 
         if (c.door == DoorStatus.OPEN) {
             if (c.obstruction || c.overload) return;          // doors stay open while a warning is active
@@ -142,12 +142,17 @@ public class TestManager implements Manager {
         }
     }
 
-    private void randomFaults(Car c) {
-        if (c.door == DoorStatus.OPEN && rnd.nextInt(12) == 0) {
+    /**
+     * Obstruction and overload come and go while the doors are open. A held car (recalled for fire
+     * or going out of service) only clears them, so it cannot stay stuck with its doors open.
+     */
+    private void randomFaults(Car c, boolean mayStart) {
+        if (c.door != DoorStatus.OPEN) return;
+        if ((mayStart || c.obstruction) && rnd.nextInt(12) == 0) {
             c.obstruction = !c.obstruction;
             api.setObstruction(c.id, c.obstruction);
         }
-        if (c.door == DoorStatus.OPEN && rnd.nextInt(15) == 0) {
+        if ((mayStart || c.overload) && rnd.nextInt(15) == 0) {
             c.overload = !c.overload;
             api.setOverload(c.id, c.overload);
         }
