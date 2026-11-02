@@ -3,7 +3,7 @@
 Run from `command-center/`: `mvn org.openjfx:javafx-maven-plugin:0.0.8:run`  (needs JDK 21+ and Maven; JavaFX 25.0.1 is downloaded on first run).
 Use the full plugin coordinates: the short `mvn javafx:run` fails if Maven cannot resolve the plugin prefix (e.g. a 401 from a corporate mirror in ~/.m2/settings.xml).
 
-## Class presentation: Java controller through the software bus
+## Java controller through the software bus
 
 From the repository root:
 
@@ -40,6 +40,7 @@ Use a UI configured with the same demo codes (JVM properties `bus.inServiceCode=
 `bus.outOfServiceCode=11`, `bus.fireTestCode=2`). Do not run a second controller alongside `--bus-demo`.
 
 ## Screen
+
 One grid. Top row, one box per column: Fire Reset, Fire Test, a blank box and the Fire Alarm indicator.
 Below it, one column per elevator: name, Take out of service / Return to service button, up arrow,
 floor display, down arrow, then five stacked boxes: direction, a blank separator, door, obstruction,
@@ -47,6 +48,7 @@ overload. The column of an out-of-service elevator is dimmed.
 Removed per class feedback: system ON/OFF, Go To floor, floor-reset/auto-door table.
 
 Colours (all in `command-center/src/main/resources/commandcenter/command-center.css`) each keep one meaning:
+
 - Green: moving (Up/Down box). A green button brings things back to normal (Return to service,
   Fire Reset during a test or alarm).
 - Amber: caution (obstruction, overload, Fire Alarm box during a fire test). An amber button is still in
@@ -54,6 +56,7 @@ Colours (all in `command-center/src/main/resources/commandcenter/command-center.
 - Red: fire alarm (Fire Alarm box).
 
 ## Architecture
+
 - `CommandCenterApi`  – status updates in (setCurrentFloor, setDirection, setDoorStatus, setObstruction,
   setOverload, setServiceStatus, setFireStatus) and boolean polling for operator actions
   (fireReset, fireTest, takeOutOfService(elevatorId), returnToService(elevatorId)). Thread-safe.
@@ -99,15 +102,15 @@ It reconnects and resubscribes on socket errors. Unsent commands are retained fo
 protocol has no application acknowledgement, so delivery across disconnects is not guaranteed
 and a failed write can cause a duplicate on retry. Statuses missed while disconnected are not replayed.
 
-| Action/status | Topic | Subtopic | Body |
-|---|---|---|---|
-| Fire reset | FIRE | ALL | 0 |
-| Fire test | FIRE | ALL | 1 by default (same recall as an alarm) |
-| Take out of service | MODE | elevator ID | configured out-of-service code |
-| Return to service | MODE | elevator ID | configured in-service code |
-| Current floor | CAR_POSITION | elevator ID or ALL | 1–5 |
-| Direction | CAR_DIRECTION | elevator ID or ALL | 0 stopped, 1 up, 2 down |
-| Door | DOOR_STATE | elevator ID or ALL | 0 closed, 2 open |
+| Action/status       | Topic         | Subtopic           | Body                                   |
+| ------------------- | ------------- | ------------------ | -------------------------------------- |
+| Fire reset          | FIRE          | ALL                | 0                                      |
+| Fire test           | FIRE          | ALL                | 1 by default (same recall as an alarm) |
+| Take out of service | MODE          | elevator ID        | configured out-of-service code         |
+| Return to service   | MODE          | elevator ID        | configured in-service code             |
+| Current floor       | CAR_POSITION  | elevator ID or ALL | 1–5                                   |
+| Direction           | CAR_DIRECTION | elevator ID or ALL | 0 stopped, 1 up, 2 down                |
+| Door                | DOOR_STATE    | elevator ID or ALL | 0 closed, 2 open                       |
 
 The upstream MODE values are explicitly TBD. Set `bus.inServiceCode` and `bus.outOfServiceCode`
 to the Building Control team's agreed values as JVM system properties (for Maven's JavaFX launch,
