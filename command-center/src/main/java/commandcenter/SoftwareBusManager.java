@@ -28,7 +28,12 @@ public final class SoftwareBusManager implements Manager {
     private CommandCenterApi api;
     private ScheduledExecutorService worker;
 
-    /** MODE codes are optional until the Building Control team defines them. */
+    /** Uses the message body codes documented in Software_Bus_Codes.xlsx. */
+    public SoftwareBusManager(String host, int port) {
+        this(host, port, BusCodes.IN_SERVICE, BusCodes.OUT_OF_SERVICE, BusCodes.FIRE_TEST);
+    }
+
+    /** Explicit overrides; null MODE codes disable service commands. */
     public SoftwareBusManager(String host, int port, Long inServiceCode,
                               Long outOfServiceCode, long fireTestCode) {
         if (port < 1 || port > 65535) throw new IllegalArgumentException("Invalid bus port");
@@ -56,7 +61,7 @@ public final class SoftwareBusManager implements Manager {
         this.api = api;
         if (inServiceCode == null) {
             System.err.println("Service commands await bus.inServiceCode and bus.outOfServiceCode; "
-                    + "the upstream MODE codes are undefined.");
+                    + "service MODE codes are disabled for this connection.");
         }
         worker = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "command-center-bus-poller");

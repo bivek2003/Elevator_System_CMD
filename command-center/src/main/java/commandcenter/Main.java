@@ -26,9 +26,9 @@ public class Main extends Application {
         String host = args.isEmpty() ? "localhost" : args.get(0);
         int port = args.isEmpty() ? 6000 : Integer.parseInt(args.get(1));
         SoftwareBusManager result = new SoftwareBusManager(host, port,
-                busDemo ? Long.valueOf(BusTestController.IN_SERVICE_CODE) : codeProperty("bus.inServiceCode"),
-                busDemo ? Long.valueOf(BusTestController.OUT_OF_SERVICE_CODE) : codeProperty("bus.outOfServiceCode"),
-                busDemo ? BusTestController.FIRE_TEST_CODE : Long.parseLong(System.getProperty("bus.fireTestCode", "1")));
+                busDemo ? BusCodes.IN_SERVICE : codeProperty("bus.inServiceCode", BusCodes.IN_SERVICE),
+                busDemo ? BusCodes.OUT_OF_SERVICE : codeProperty("bus.outOfServiceCode", BusCodes.OUT_OF_SERVICE),
+                busDemo ? BusCodes.FIRE_TEST : codeProperty("bus.fireTestCode", BusCodes.FIRE_TEST));
         if (args.isEmpty()) {
             Thread bus = new Thread(() -> {
                 try {
@@ -54,9 +54,9 @@ public class Main extends Application {
         };
     }
 
-    private static Long codeProperty(String name) {
+    private static long codeProperty(String name, long defaultValue) {
         String value = System.getProperty(name);
-        return value == null ? null : Long.valueOf(value);
+        return value == null ? defaultValue : Long.parseLong(value);
     }
 
     @Override

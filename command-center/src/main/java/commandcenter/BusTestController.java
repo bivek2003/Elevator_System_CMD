@@ -17,10 +17,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 /** Java test device: TestManager talks to this adapter, never directly to the view. */
 public final class BusTestController implements CommandCenterApi, AutoCloseable {
-    // Temporary classroom codes, shared by both ends of --bus-demo, not team standards.
-    public static final long IN_SERVICE_CODE = 10;
-    public static final long OUT_OF_SERVICE_CODE = 11;
-    public static final long FIRE_TEST_CODE = 2;
+    // Shared with local and remote UI connections, per Software_Bus_Codes.xlsx.
+    public static final long IN_SERVICE_CODE = BusCodes.IN_SERVICE;
+    public static final long OUT_OF_SERVICE_CODE = BusCodes.OUT_OF_SERVICE;
+    public static final long FIRE_TEST_CODE = BusCodes.FIRE_TEST;
 
     private record Key(int topic, int elevator) { }
     private final String host;
@@ -50,7 +50,7 @@ public final class BusTestController implements CommandCenterApi, AutoCloseable 
         });
         simulation.start(this);
         worker.scheduleWithFixedDelay(this::poll, 0, 100, TimeUnit.MILLISECONDS);
-        System.out.println("Java bus test controller: demo MODE 10=in service, 11=out; FIRE 2=test");
+        System.out.println("Java bus test controller: MODE 10=in service, 11=out; FIRE 2=test");
     }
 
     private void connect() throws IOException {
@@ -167,7 +167,7 @@ public final class BusTestController implements CommandCenterApi, AutoCloseable 
         return result;
     }
 
-    /** Separate-terminal option, using the same temporary codes as --bus-demo. */
+    /** Separate-terminal option, using the same spreadsheet codes as the UI. */
     public static void main(String[] args) throws InterruptedException {
         if (args.length != 0 && args.length != 2) {
             throw new IllegalArgumentException("Usage: BusTestController [host port]");
