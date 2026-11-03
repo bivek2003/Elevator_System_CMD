@@ -16,9 +16,12 @@ This starts the UI, a local bus on port 6000, and a Java test controller.
 The elevators move, and the fire and service buttons work through the bus.
 Close any other bus using port 6000 first.
 
-The demo uses temporary codes: FIRE 0 = reset, FIRE 2 = test,
+The UI and test controller use the codes in `Software_Bus_Codes.xlsx`:
+FIRE 0 = reset/normal, FIRE 1 = alarm, FIRE 2 = test,
 MODE 10 = in service, and MODE 11 = out of service.
-These still need agreement between teams.
+The controller confirms out of service after reaching floor 1 and opening its doors.
+Until then, the last reported service status remains displayed. A separate
+"going out of service" code is pending agreement and is not implemented.
 
 ## Other run options
 
@@ -34,8 +37,9 @@ UI with a local bus, without the test controller:
 mvn org.openjfx:javafx-maven-plugin:0.0.8:run
 ```
 
-This needs a separate controller to send elevator updates. Service commands also
-need `bus.inServiceCode` and `bus.outOfServiceCode` set as JVM properties.
+This needs a separate controller to send elevator updates. The spreadsheet codes
+are used by default. JVM properties `bus.inServiceCode`, `bus.outOfServiceCode`,
+and `bus.fireTestCode` can override them for another controller.
 
 Connect to an existing bus (replace the example IP):
 

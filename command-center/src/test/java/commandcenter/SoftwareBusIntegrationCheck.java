@@ -47,8 +47,8 @@ public final class SoftwareBusIntegrationCheck {
             send(device, Message.of(Protocol.SUBSCRIBE, Topics.FIRE, Topics.ALL));
             send(device, Message.of(Protocol.SUBSCRIBE, Topics.MODE, 2));
             check(get(device, Topics.FIRE, Topics.ALL).topic() == Protocol.NO_MESSAGE, "empty subscription");
-            // Test fixture MODE 10/11 and FIRE test 2 are explicit, not proposed team defaults.
-            SoftwareBusManager manager = new SoftwareBusManager("localhost", port, 10L, 11L, 2);
+            // Assert the spreadsheet's literal wire values against the shared defaults.
+            SoftwareBusManager manager = new SoftwareBusManager("localhost", port);
             Api api = new Api();
             manager.start(api);
             try {
