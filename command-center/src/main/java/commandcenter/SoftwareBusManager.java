@@ -77,6 +77,7 @@ public final class SoftwareBusManager implements Manager {
         if (stopped) { disconnect(); return; }
         next.connect(new InetSocketAddress(host, port), 2000);
         next.setSoTimeout(2000);
+        send(Message.of(Protocol.REGISTER, 0, 0));
         for (int topic : STATUS_TOPICS) {
             // Upstream ALL subscriptions do not receive individual elevator subtopics.
             for (int id = 0; id <= CommandCenterApi.ELEVATORS; id++) {

@@ -5,7 +5,7 @@ public class Topics {
     private Topics() {}
 
     // subtopics
-    // Subtopic 0: broadcasts to all elevators; a subscription to 0 receives broadcasts only.
+    //Subtopic 0: all elevators. On a subscription it means "any elevator"
     public static final int ALL = 0;
     public static final int ELEVATOR_1 = 1;
     public static final int ELEVATOR_2 = 2;
@@ -13,10 +13,10 @@ public class Topics {
     public static final int ELEVATOR_4 = 4;
 
     // 0 is reserved / invalid so an all-zero message is easy to spot as a bug.
-    // Body codes are documented in Software_Bus_Codes.xlsx.
-    // Body: 0 = reset/normal, 1 = fire alarm, 2 = fire test
+    // TODO: Need to create large table and standardize messages with all groups
+    //Body: 1 = fire alarm on, 0 = reset
     public static final int FIRE = 1;
-    // Body: 10 = in service, 11 = out of service (after floor 1 arrival and doors open)
+    // Body: operating mode code (codes TBD by Building Control team)
     public static final int MODE = 2;
     // Body: current floor of the car named in the subtopic
     public static final int CAR_POSITION = 3;

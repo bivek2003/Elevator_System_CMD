@@ -1,12 +1,20 @@
-package commandcenter;
+package harness;
+
+import commandcenter.CommandCenterApi;
+import commandcenter.Direction;
+import commandcenter.DoorStatus;
+import commandcenter.FireStatus;
+import commandcenter.Manager;
+import commandcenter.ServiceStatus;
 
 import java.util.Random;
+import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 
-/** Simulates four elevators and drives the Command Center through its API only. */
+/** Simulates this harness's elevators. The API here is the bus adapter, not the panel. */
 public class TestManager implements Manager {
     private static final int BOTTOM = 1;
     private static final int DWELL_TICKS = 3;
@@ -23,21 +31,37 @@ public class TestManager implements Manager {
 
     private final Random rnd = new Random();
     private final boolean simulateFaults;
-    private final Car[] cars = new Car[CommandCenterApi.ELEVATORS];
+    private final Car[] cars;
     private CommandCenterApi api;
     private ScheduledExecutorService exec;
     private FireStatus fire = FireStatus.NORMAL;
 
     public TestManager() { this(true); }
 
-    TestManager(boolean simulateFaults) { this.simulateFaults = simulateFaults; }
+    TestManager(boolean simulateFaults) { this(simulateFaults, Set.of(1, 2, 3, 4)); }
+
+    TestManager(boolean simulateFaults, Set<Integer> elevatorIds) {
+        if (elevatorIds.isEmpty()) {
+            throw new IllegalArgumentException("Elevator IDs must be a nonempty subset of 1..4");
+        }
+        for (int id : elevatorIds) {
+            if (id < 1 || id > CommandCenterApi.ELEVATORS) {
+                throw new IllegalArgumentException("Elevator IDs must be in 1..4");
+            }
+        }
+        this.simulateFaults = simulateFaults;
+        this.cars = new Car[elevatorIds.size()];
+        int[] startFloors = {3, 1, 5, 2};
+        int index = 0;
+        for (int id = 1; id <= CommandCenterApi.ELEVATORS; id++) {
+            if (elevatorIds.contains(id)) cars[index++] = new Car(id, startFloors[id - 1]);
+        }
+    }
 
     @Override
     public synchronized void start(CommandCenterApi api) {
         this.api = api;
-        int[] startFloors = {3, 1, 5, 2};
-        for (int i = 0; i < cars.length; i++) {
-            Car c = cars[i] = new Car(i + 1, startFloors[i]);
+        for (Car c : cars) {
             api.setCurrentFloor(c.id, c.floor);
             api.setDirection(c.id, c.dir);
             api.setDoorStatus(c.id, c.door);
@@ -73,7 +97,11 @@ public class TestManager implements Manager {
      * its doors, and only then is reported out of service.
      */
     private void onServiceCommand(int id, ServiceStatus target) {
-        Car c = cars[id - 1];
+        Car c = null;
+        for (Car car : cars) {
+            if (car.id == id) c = car;
+        }
+        if (c == null) throw new IllegalArgumentException("Harness does not own elevator " + id);
         if (target == ServiceStatus.OUT_OF_SERVICE) {
             c.inService = false;
             recall(c);
