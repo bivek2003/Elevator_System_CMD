@@ -1,78 +1,35 @@
 package commandcenter;
 
-import SoftwareBus.MessageBus;
-import SoftwareBus.SoftwareBusServer;
-import java.io.IOException;
-import java.util.List;
+import integration.BusConnection;
 import javafx.application.Application;
-import javafx.application.Platform;
 import javafx.scene.Scene;
 import javafx.stage.Stage;
 
-/**
- * Initializes the system: creates the screen and a manager and connects them.
- * Selects the software bus manager or the demo manager from launch arguments.
- */
+/** Process 1: the panel and its own unchanged Team 3 Software Bus (SB). */
 public class Main extends Application {
-    private Manager manager;
-
-    static Manager createManager(List<String> args) {
-        if (args.equals(List.of("--demo"))) return new TestManager();
-        boolean busDemo = args.equals(List.of("--bus-demo"));
-        if (busDemo) args = List.of();
-        if (!args.isEmpty() && args.size() != 2) {
-            throw new IllegalArgumentException("Usage: Main [--demo | --bus-demo | busHost busPort]");
-        }
-        String host = args.isEmpty() ? "localhost" : args.get(0);
-        int port = args.isEmpty() ? 6000 : Integer.parseInt(args.get(1));
-        SoftwareBusManager result = new SoftwareBusManager(host, port,
-                busDemo ? BusCodes.IN_SERVICE : codeProperty("bus.inServiceCode", BusCodes.IN_SERVICE),
-                busDemo ? BusCodes.OUT_OF_SERVICE : codeProperty("bus.outOfServiceCode", BusCodes.OUT_OF_SERVICE),
-                busDemo ? BusCodes.FIRE_TEST : codeProperty("bus.fireTestCode", BusCodes.FIRE_TEST));
-        if (args.isEmpty()) {
-            Thread bus = new Thread(() -> {
-                try {
-                    new SoftwareBusServer(port, new MessageBus()).start();
-                } catch (IOException e) {
-                    System.err.println("Local software bus stopped: " + e.getMessage());
-                }
-            }, "software-bus");
-            bus.setDaemon(true);
-            bus.start();
-        }
-        if (!busDemo) return result;
-        BusTestController controller = new BusTestController(host, port);
-        return new Manager() {
-            @Override public void start(CommandCenterApi api) {
-                result.start(api);
-                controller.start();
-            }
-            @Override public void stop() {
-                controller.close();
-                result.stop();
-            }
-        };
-    }
-
-    private static long codeProperty(String name, long defaultValue) {
-        String value = System.getProperty(name);
-        return value == null ? defaultValue : Long.parseLong(value);
-    }
+    private SoftwareBusManager manager;
 
     @Override
     public void start(Stage stage) {
+        BusConnection bus = BusConnection.open(6000, getParameters().getRaw().toArray(new String[0]));
         CommandCenterView view = new CommandCenterView();
-        manager = createManager(getParameters().getRaw());
+        manager = new SoftwareBusManager(bus.host, bus.port);
         manager.start(view);
 
-        stage.setTitle("Command Center");
+        stage.setTitle("Command Center — SB");
         stage.setScene(new Scene(view.getRoot()));
         stage.setResizable(false);
-        stage.setOnCloseRequest(e -> { manager.stop(); Platform.exit(); });
         stage.show();
+    }
+
+    @Override
+    public void stop() {
+        if (manager != null) manager.stop();
     }
 
     public static void main(String[] args) {
         launch(args);
+        // Upstream bus threads have no shutdown API and live until process exit.
+        System.exit(0);
     }
 }

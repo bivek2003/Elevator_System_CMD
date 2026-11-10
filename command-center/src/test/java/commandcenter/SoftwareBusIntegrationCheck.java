@@ -1,5 +1,7 @@
 package commandcenter;
 
+import harness.BusTestController;
+
 import SoftwareBus.MessageBus;
 import SoftwareBus.SoftwareBusServer;
 import SoftwareBus.Topics;
@@ -7,6 +9,7 @@ import Utilities.Message;
 import Utilities.Protocol;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
 
@@ -84,7 +87,39 @@ public final class SoftwareBusIntegrationCheck {
             } finally { manager.stop(); }
         }
         checkJavaController(port);
+        checkHarnessOwnership(port);
         System.out.println("Software bus integration checks passed (including Java test controller)");
+    }
+
+    private static void checkHarnessOwnership(int port) throws Exception {
+        try (Socket observer = connect(port);
+             BusTestController first = new BusTestController("localhost", port, Set.of(1, 2), true);
+             BusTestController second = new BusTestController("localhost", port, Set.of(3, 4), false)) {
+            observer.setSoTimeout(2000);
+            send(observer, Message.of(Protocol.SUBSCRIBE, Topics.CAR_POSITION, 4));
+            send(observer, Message.of(Protocol.SUBSCRIBE, Topics.MODE, 4));
+            boolean rejected = false;
+            try { first.setCurrentFloor(4, 3); }
+            catch (IllegalArgumentException expected) { rejected = true; }
+            check(rejected, "Test 1 rejects status for Test 2's elevators");
+            first.start();
+            second.start();
+            expect(observer, Topics.CAR_POSITION, 4, 2);
+            expect(observer, Topics.MODE, 4, 10);
+            send(observer, Message.of(Topics.MODE, 4, 11));
+            long deadline = System.nanoTime() + 20_000_000_000L;
+            boolean confirmed = false;
+            while (System.nanoTime() < deadline && !confirmed) {
+                Message status = get(observer, Topics.MODE, 4);
+                confirmed = status.topic() == Topics.MODE && status.value() == 11;
+                if (!confirmed) Thread.sleep(50);
+            }
+            check(confirmed, "Test 2 handles elevator 4 service commands with both harnesses running");
+            second.close();
+            // Test 1 remains live after Test 2 closes.
+            send(observer, Message.of(Protocol.SUBSCRIBE, Topics.MODE, 1));
+            expect(observer, Topics.MODE, 1, 10);
+        }
     }
 
     private static void checkJavaController(int port) throws Exception {
