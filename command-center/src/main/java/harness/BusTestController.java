@@ -1,13 +1,12 @@
 package harness;
 
-import commandcenter.BusCodes;
 import commandcenter.CommandCenterApi;
 import commandcenter.Direction;
 import commandcenter.DoorStatus;
 import commandcenter.FireStatus;
 import commandcenter.ServiceStatus;
 
-import SoftwareBus.Topics;
+import Utilities.Topics;
 import Utilities.Message;
 import Utilities.Protocol;
 import java.io.EOFException;
@@ -24,11 +23,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 /** Java test device: TestManager talks to this adapter, never directly to the view. */
 public final class BusTestController implements CommandCenterApi, AutoCloseable {
-    // Shared with local and remote UI connections, per Software_Bus_Codes.xlsx.
-    public static final long IN_SERVICE_CODE = BusCodes.IN_SERVICE;
-    public static final long OUT_OF_SERVICE_CODE = BusCodes.OUT_OF_SERVICE;
-    public static final long FIRE_TEST_CODE = BusCodes.FIRE_TEST;
-
     private record Key(int topic, int elevator) { }
     private final String host;
     private final int port;
@@ -43,6 +37,10 @@ public final class BusTestController implements CommandCenterApi, AutoCloseable 
     private volatile boolean stopped;
     private ScheduledExecutorService worker;
     private long nextSnapshot;
+    // Latest per-elevator telemetry, re-published as catalog CABIN_STATUS / DOOR_STATUS messages.
+    private final int[] floor = new int[ELEVATORS + 1], dir = new int[ELEVATORS + 1];
+    private final boolean[] doorOpen = new boolean[ELEVATORS + 1], obstructed = new boolean[ELEVATORS + 1],
+            overweight = new boolean[ELEVATORS + 1];
 
     public BusTestController(String host, int port) {
         this(host, port, Set.of(1, 2, 3, 4), true);
@@ -72,7 +70,7 @@ public final class BusTestController implements CommandCenterApi, AutoCloseable 
         });
         simulation.start(this);
         worker.scheduleWithFixedDelay(this::poll, 0, 100, TimeUnit.MILLISECONDS);
-        System.out.println("Java bus test controller: MODE 10=in service, 11=out; FIRE 2=test");
+        System.out.println("Java bus test controller: catalog messages (FIRE, ELEVATOR_COMMAND, CABIN_STATUS, DOOR_STATUS)");
     }
 
     private void connect() throws IOException {
@@ -82,7 +80,7 @@ public final class BusTestController implements CommandCenterApi, AutoCloseable 
         next.connect(new InetSocketAddress(host, port), 2000);
         next.setSoTimeout(2000);
         send(Message.of(Protocol.REGISTER, 0, 0));
-        for (int topic : new int[] {Topics.FIRE, Topics.MODE}) {
+        for (int topic : new int[] {Topics.FIRE, Topics.ELEVATOR_COMMAND}) {
             for (int id : subscriptions) send(Message.of(Protocol.SUBSCRIBE, topic, id));
         }
         nextSnapshot = 0;
@@ -94,7 +92,7 @@ public final class BusTestController implements CommandCenterApi, AutoCloseable 
         try {
             if (socket == null) connect();
             if (stopped) return;
-            for (int topic : new int[] {Topics.FIRE, Topics.MODE}) {
+            for (int topic : new int[] {Topics.FIRE, Topics.ELEVATOR_COMMAND}) {
                 for (int id : subscriptions) {
                     for (int n = 0; n < 32; n++) {
                         send(Message.of(Protocol.GET, topic, id));
@@ -118,53 +116,76 @@ public final class BusTestController implements CommandCenterApi, AutoCloseable 
 
     private void command(Message m) {
         if (m.topic() == Topics.FIRE) {
-            if (m.value() == 0) reset.set(true);
-            else if (m.value() == FIRE_TEST_CODE || m.value() == 1) test.set(true);
-            else return;
-        } else if (m.topic() == Topics.MODE) {
+            if (m.flag(1)) test.set(true);
+            else reset.set(true);
+        } else if (m.topic() == Topics.ELEVATOR_COMMAND) {
             int first = m.subtopic() == Topics.ALL ? 1 : m.subtopic();
             int last = m.subtopic() == Topics.ALL ? ELEVATORS : first;
             if (first < 1 || last > ELEVATORS) return;
             for (int id = first; id <= last; id++) {
                 if (!elevatorIds.contains(id)) continue;
-                if (m.value() == IN_SERVICE_CODE) back[id - 1].set(true);
-                else if (m.value() == OUT_OF_SERVICE_CODE) out[id - 1].set(true);
-                else return;
+                if (m.flag(1)) back[id - 1].set(true);
+                else out[id - 1].set(true);
             }
         } else return;
         System.out.println("Java test controller received command " + m);
     }
 
-    private void status(int topic, int id, long value) {
-        if (id != Topics.ALL && !elevatorIds.contains(id)) {
+    private void checkOwned(int id) {
+        if (!elevatorIds.contains(id)) {
             throw new IllegalArgumentException("Harness does not own elevator " + id);
         }
-        Key key = new Key(topic, id);
-        Message m = Message.of(topic, id, value);
-        statuses.put(key, m);
+    }
+
+    private synchronized void cabinStatus(int id) {
+        if (floor[id] < Message.MIN_FLOOR) return; // wait for the first real floor
+        statuses.put(new Key(Topics.CABIN_STATUS, id),
+                Message.cabinStatus(id, dir[id] == Message.DIR_IDLE, floor[id], dir[id]));
+    }
+
+    private synchronized void doorStatus(int id) {
+        statuses.put(new Key(Topics.DOOR_STATUS, id),
+                Message.doorStatus(id, doorOpen[id], !doorOpen[id], obstructed[id], overweight[id]));
     }
 
     @Override public boolean fireTest() { return test.getAndSet(false); }
     @Override public boolean fireReset() { return reset.getAndSet(false); }
     @Override public boolean takeOutOfService(int id) { return out[id - 1].getAndSet(false); }
     @Override public boolean returnToService(int id) { return back[id - 1].getAndSet(false); }
-    @Override public void setCurrentFloor(int id, int floor) { status(Topics.CAR_POSITION, id, floor); }
+    @Override public void setCurrentFloor(int id, int value) {
+        checkOwned(id);
+        floor[id] = value;
+        cabinStatus(id);
+    }
     @Override public void setDirection(int id, Direction d) {
-        status(Topics.CAR_DIRECTION, id, switch (d) { case NONE -> 0; case UP -> 1; case DOWN -> 2; });
+        checkOwned(id);
+        dir[id] = switch (d) { case NONE -> Message.DIR_IDLE; case UP -> Message.DIR_UP; case DOWN -> Message.DIR_DOWN; };
+        cabinStatus(id);
     }
     @Override public void setDoorStatus(int id, DoorStatus s) {
-        status(Topics.DOOR_STATE, id, s == DoorStatus.OPEN ? 2 : 0);
+        checkOwned(id);
+        doorOpen[id] = s == DoorStatus.OPEN;
+        doorStatus(id);
     }
     @Override public void setServiceStatus(int id, ServiceStatus s) {
-        status(Topics.MODE, id, s == ServiceStatus.IN_SERVICE ? IN_SERVICE_CODE : OUT_OF_SERVICE_CODE);
+        checkOwned(id);
+        statuses.put(new Key(Topics.ELEVATOR_COMMAND, id),
+                Message.elevatorCommand(id, s == ServiceStatus.IN_SERVICE));
     }
     @Override public void setFireStatus(FireStatus s) {
         if (!fireStatusOwner) return;
-        status(Topics.FIRE, Topics.ALL, switch (s) { case NORMAL -> 0; case ALARM -> 1; case TEST -> FIRE_TEST_CODE; });
+        statuses.put(new Key(Topics.FIRE, Topics.ALL), Message.fire(s != FireStatus.NORMAL));
     }
-    // No upstream topics exist for these warnings; bus demos disable random faults.
-    @Override public void setObstruction(int id, boolean active) { }
-    @Override public void setOverload(int id, boolean active) { }
+    @Override public void setObstruction(int id, boolean active) {
+        checkOwned(id);
+        obstructed[id] = active;
+        doorStatus(id);
+    }
+    @Override public void setOverload(int id, boolean active) {
+        checkOwned(id);
+        overweight[id] = active;
+        doorStatus(id);
+    }
 
     private void send(Message m) throws IOException {
         Protocol.writeMessage(socket.getOutputStream(), m);

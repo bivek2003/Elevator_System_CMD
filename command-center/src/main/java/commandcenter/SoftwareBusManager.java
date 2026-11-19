@@ -1,6 +1,6 @@
 package commandcenter;
 
-import SoftwareBus.Topics;
+import Utilities.Topics;
 import Utilities.Message;
 import Utilities.Protocol;
 import java.io.EOFException;
@@ -16,53 +16,26 @@ import java.util.concurrent.TimeUnit;
 /** Polls both the operator API and the upstream bus's GET queues on one worker. */
 public final class SoftwareBusManager implements Manager {
     private static final int[] STATUS_TOPICS = {
-        Topics.FIRE, Topics.MODE, Topics.CAR_POSITION, Topics.CAR_DIRECTION, Topics.DOOR_STATE
+        Topics.FIRE, Topics.ELEVATOR_COMMAND, Topics.CABIN_STATUS, Topics.DOOR_STATUS
     };
     private final String host;
     private final int port;
-    private final Long inServiceCode, outOfServiceCode;
-    private final long fireTestCode;
     private final Deque<Message> outgoing = new ArrayDeque<>();
     private volatile Socket socket;
     private volatile boolean stopped;
     private CommandCenterApi api;
     private ScheduledExecutorService worker;
 
-    /** Uses the message body codes documented in Software_Bus_Codes.xlsx. */
+    /** Message layouts follow the Team 3 Software Bus Message Catalog. */
     public SoftwareBusManager(String host, int port) {
-        this(host, port, BusCodes.IN_SERVICE, BusCodes.OUT_OF_SERVICE, BusCodes.FIRE_TEST);
-    }
-
-    /** Explicit overrides; null MODE codes disable service commands. */
-    public SoftwareBusManager(String host, int port, Long inServiceCode,
-                              Long outOfServiceCode, long fireTestCode) {
         if (port < 1 || port > 65535) throw new IllegalArgumentException("Invalid bus port");
-        if ((inServiceCode == null) != (outOfServiceCode == null)) {
-            throw new IllegalArgumentException("Configure both service MODE codes");
-        }
-        if (inServiceCode != null) {
-            Message.of(Topics.MODE, Topics.ALL, inServiceCode);
-            Message.of(Topics.MODE, Topics.ALL, outOfServiceCode);
-            if (inServiceCode.equals(outOfServiceCode)) {
-                throw new IllegalArgumentException("Service MODE codes must differ");
-            }
-        }
-        Message.of(Topics.FIRE, Topics.ALL, fireTestCode);
-        if (fireTestCode == 0) throw new IllegalArgumentException("Fire test cannot use reset code 0");
         this.host = host;
         this.port = port;
-        this.inServiceCode = inServiceCode;
-        this.outOfServiceCode = outOfServiceCode;
-        this.fireTestCode = fireTestCode;
     }
 
     @Override public synchronized void start(CommandCenterApi api) {
         if (worker != null) throw new IllegalStateException("Manager already started");
         this.api = api;
-        if (inServiceCode == null) {
-            System.err.println("Service commands await bus.inServiceCode and bus.outOfServiceCode; "
-                    + "service MODE codes are disabled for this connection.");
-        }
         worker = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "command-center-bus-poller");
             t.setDaemon(true);
@@ -92,13 +65,11 @@ public final class SoftwareBusManager implements Manager {
         try {
             if (socket == null) connect();
             if (stopped) return;
-            if (api.fireTest()) outgoing.add(Message.of(Topics.FIRE, Topics.ALL, fireTestCode));
-            if (api.fireReset()) outgoing.add(Message.of(Topics.FIRE, Topics.ALL, 0));
-            if (inServiceCode != null) {
-                for (int id = 1; id <= CommandCenterApi.ELEVATORS; id++) {
-                    if (api.takeOutOfService(id)) outgoing.add(Message.of(Topics.MODE, id, outOfServiceCode));
-                    if (api.returnToService(id)) outgoing.add(Message.of(Topics.MODE, id, inServiceCode));
-                }
+            if (api.fireTest()) outgoing.add(Message.fire(true));
+            if (api.fireReset()) outgoing.add(Message.fire(false));
+            for (int id = 1; id <= CommandCenterApi.ELEVATORS; id++) {
+                if (api.takeOutOfService(id)) outgoing.add(Message.elevatorCommand(id, false));
+                if (api.returnToService(id)) outgoing.add(Message.elevatorCommand(id, true));
             }
             while (!outgoing.isEmpty()) {
                 send(outgoing.peek());
@@ -124,11 +95,9 @@ public final class SoftwareBusManager implements Manager {
     }
 
     private void apply(Message m) {
-        long value = m.value();
         if (m.topic() == Topics.FIRE) {
-            if (value == 0) api.setFireStatus(FireStatus.NORMAL);
-            else if (value == 1) api.setFireStatus(FireStatus.ALARM);
-            else if (value == fireTestCode) api.setFireStatus(FireStatus.TEST);
+            // The catalog has one fire value: 1 = fire alert / test fire, 0 = reset.
+            api.setFireStatus(m.flag(1) ? FireStatus.ALARM : FireStatus.NORMAL);
             return;
         }
         int first = m.subtopic() == Topics.ALL ? 1 : m.subtopic();
@@ -136,24 +105,23 @@ public final class SoftwareBusManager implements Manager {
         if (first < 1 || last > CommandCenterApi.ELEVATORS) return;
         for (int id = first; id <= last; id++) {
             switch (m.topic()) {
-                case Topics.CAR_POSITION -> {
-                    if (value >= 1 && value <= CommandCenterApi.FLOORS) api.setCurrentFloor(id, (int) value);
-                }
-                case Topics.CAR_DIRECTION -> {
-                    if (value <= 2) api.setDirection(id, switch ((int) value) {
-                        case 1 -> Direction.UP;
-                        case 2 -> Direction.DOWN;
+                case Topics.CABIN_STATUS -> {
+                    int floor = m.payload(2), dir = m.payload(3);
+                    if (floor >= Message.MIN_FLOOR && floor <= CommandCenterApi.FLOORS) api.setCurrentFloor(id, floor);
+                    if (dir <= Message.DIR_DOWN) api.setDirection(id, switch (dir) {
+                        case Message.DIR_UP -> Direction.UP;
+                        case Message.DIR_DOWN -> Direction.DOWN;
                         default -> Direction.NONE;
                     });
                 }
-                case Topics.DOOR_STATE -> {
-                    if (value == 0) api.setDoorStatus(id, DoorStatus.CLOSED);
-                    else if (value == 2) api.setDoorStatus(id, DoorStatus.OPEN);
+                case Topics.DOOR_STATUS -> {
+                    if (m.flag(1)) api.setDoorStatus(id, DoorStatus.OPEN);
+                    else if (m.flag(2)) api.setDoorStatus(id, DoorStatus.CLOSED);
+                    api.setObstruction(id, m.flag(3));
+                    api.setOverload(id, m.flag(4));
                 }
-                case Topics.MODE -> {
-                    if (inServiceCode != null && value == inServiceCode) api.setServiceStatus(id, ServiceStatus.IN_SERVICE);
-                    else if (outOfServiceCode != null && value == outOfServiceCode) api.setServiceStatus(id, ServiceStatus.OUT_OF_SERVICE);
-                }
+                case Topics.ELEVATOR_COMMAND ->
+                    api.setServiceStatus(id, m.flag(1) ? ServiceStatus.IN_SERVICE : ServiceStatus.OUT_OF_SERVICE);
                 default -> { }
             }
         }

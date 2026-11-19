@@ -2,7 +2,7 @@ package commandcenter;
 
 import integration.BusConnection;
 import java.net.ServerSocket;
-import SoftwareBus.Topics;
+import Utilities.Topics;
 import Utilities.Message;
 import Utilities.Protocol;
 import java.net.Socket;
@@ -70,7 +70,7 @@ public class DistributedBusCheck {
                     && panel.floors.get(3) > 0 && panel.floors.get(4) > 0, "status from both remote buses");
             checkUnsubscribe(panelPort);
             panel.test.set(true);
-            await(() -> panel.fire == FireStatus.TEST, "fire test across buses");
+            await(() -> panel.fire == FireStatus.ALARM, "fire test across buses");
             panel.reset.set(true);
             await(() -> panel.fire == FireStatus.NORMAL, "fire reset across buses");
             panel.out.set(true);
@@ -124,12 +124,12 @@ public class DistributedBusCheck {
         try (Socket observer = new Socket("localhost", port)) {
             observer.setSoTimeout(2000);
             Protocol.writeMessage(observer.getOutputStream(), Message.of(Protocol.REGISTER, 0, 0));
-            Protocol.writeMessage(observer.getOutputStream(), Message.of(Protocol.SUBSCRIBE, Topics.CAR_POSITION, 4));
+            Protocol.writeMessage(observer.getOutputStream(), Message.of(Protocol.SUBSCRIBE, Topics.CABIN_STATUS, 4));
             await(() -> {
-                try { return getPosition(observer).topic() == Topics.CAR_POSITION; }
+                try { return getPosition(observer).topic() == Topics.CABIN_STATUS; }
                 catch (Exception e) { throw new RuntimeException(e); }
             }, "subscriber receives remote Test2 status");
-            Protocol.writeMessage(observer.getOutputStream(), Message.of(Protocol.UNSUBSCRIBE, Topics.CAR_POSITION, 4));
+            Protocol.writeMessage(observer.getOutputStream(), Message.of(Protocol.UNSUBSCRIBE, Topics.CABIN_STATUS, 4));
             if (getPosition(observer).topic() != Protocol.NO_MESSAGE) {
                 throw new AssertionError("Unsubscribed queue still delivers messages");
             }
@@ -137,7 +137,7 @@ public class DistributedBusCheck {
     }
 
     private static Message getPosition(Socket socket) throws Exception {
-        Protocol.writeMessage(socket.getOutputStream(), Message.of(Protocol.GET, Topics.CAR_POSITION, 4));
+        Protocol.writeMessage(socket.getOutputStream(), Message.of(Protocol.GET, Topics.CABIN_STATUS, 4));
         Message result = Protocol.readMessage(socket.getInputStream());
         if (result == null) throw new AssertionError("Observer disconnected");
         return result;

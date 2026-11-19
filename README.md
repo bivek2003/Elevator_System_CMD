@@ -148,10 +148,15 @@ ready. Our manager/controller retry their local client connections and restore
 subscriptions, but this does not repair a disconnected bus-to-router link.
 These upstream behaviors are preserved rather than patched.
 
-FIRE 0 = reset, 1 = alarm, 2 = test; MODE 10 = in service and 11 = out of service
-remain provisional application codes. Confirm them with the other teams, along
-with command/status semantics and the global fire-status authority. Obstruction
-and overload topics are unconfirmed and their bus integration remains pending.
+Message layouts follow the Team 3 Software Bus Message Catalog (08 Nov 2026), via
+`Utilities.Message` and `Utilities.Topics` from Team 3's repo: byte 0 is the topic,
+byte 1 the subtopic (elevator 1-4, or 0 for building-wide), and catalog "payload
+byte n" is read with `payload(n)`. The Command Center publishes FIRE (1 = test fire,
+0 = reset) and ELEVATOR_COMMAND (1 = in service, 0 = out of service), and consumes
+FIRE, ELEVATOR_COMMAND, CABIN_STATUS (floor, direction) and DOOR_STATUS (open/closed,
+obstruction, overweight). Build messages with the `Message` builders, never
+`Message.of(...)`. The catalog has a single fire value, so an incoming FIRE = 1 is
+shown as ALARM; confirm the global fire-status authority with the other teams.
 The simulator currently handles alarm input as a fire test; a distinct alarm
 scenario remains pending. The panel can display separate test and alarm statuses.
 Record final integration results and update the CCR with the screenshot and
