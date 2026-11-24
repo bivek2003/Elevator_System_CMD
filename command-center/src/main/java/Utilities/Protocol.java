@@ -1,6 +1,7 @@
 package Utilities;
 
 import java.io.*;
+import java.util.HexFormat;
 
 /**
  * The wire protocol, the shared contract between the SoftwareBusClient
@@ -10,12 +11,12 @@ import java.io.*;
  * Every frame is a fixed 8-byte Message. Byte 0 tells the bus what the frame is:
  * a value of 0xF0 or higher is a command, anything lower is a topic, and the
  * frame is published to every other connection. Commands carry the target topic
- * in byte 1 and the target subtopic in the last byte of the body. Only GET gets
+ * in byte 1 and the target subtopic in the last byte of the body. REGISTER and GET receive
  * a response; TCP already guarantees delivery, so there are no ACKs.
  * <pre>
  *  REQUEST                         RESPONSE
  *  (publish)   8-byte message      none
- *  REGISTER    (no payload)        none
+ *  REGISTER    (no payload)        REGISTER, ID (1-255) in byte 1; 0 = failed
  *  SUBSCRIBE   topic, subtopic     none
  *  UNSUBSCRIBE topic, subtopic     none
  *  GET         topic, subtopic     next queued message   or   NO_MESSAGE
@@ -47,7 +48,19 @@ public class Protocol {
 
     // Reads exactly one 8-byte message from a socket stream (blocks until it arrives)
     public static Message readMessage(InputStream in) throws IOException {
+        // debug trace prints
+//        System.out.printf("[%tT.%<tL] [%s] waiting to read...%n",
+//                System.currentTimeMillis(),
+//                Thread.currentThread().getName());
+
         byte[] wire = in.readNBytes(Message.SIZE);
+
+        // debug trace prints
+//        System.out.printf("[%tT.%<tL] [%s] READ %d bytes: %s%n",
+//                System.currentTimeMillis(),
+//                Thread.currentThread().getName(),
+//                wire.length,
+//                showHexVal(wire));
 
         // Format checks:
         if (wire.length == 0) {
@@ -63,7 +76,20 @@ public class Protocol {
 
     // Writes a message's 8 bytes to a socket stream (caller flushes).
     public static void writeMessage(OutputStream out, Message m) throws IOException {
+        // debug trace prints
+//        byte[] bytes = m.toBytes();
+//        System.out.printf("[%tT.%<tL] [%s] WRITE %d bytes: %s%n",
+//                System.currentTimeMillis(),
+//                Thread.currentThread().getName(),
+//                bytes.length,
+//                showHexVal(bytes));
+
         out.write(m.toBytes());
         out.flush();
+    }
+
+    // converts message to hex bytes, currently exclusively used for debugging
+    private static String showHexVal(byte[] b) {
+        return (HexFormat.of().formatHex(b));
     }
 }

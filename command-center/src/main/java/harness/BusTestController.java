@@ -28,7 +28,6 @@ public final class BusTestController implements CommandCenterApi, AutoCloseable 
     private final int port;
     private final TestManager simulation;
     private final Set<Integer> elevatorIds;
-    private final int[] subscriptions;
     private final boolean fireStatusOwner;
     private final AtomicBoolean test = new AtomicBoolean(), reset = new AtomicBoolean();
     private final AtomicBoolean[] out = flags(), back = flags();
@@ -52,12 +51,6 @@ public final class BusTestController implements CommandCenterApi, AutoCloseable 
         this.port = port;
         this.elevatorIds = Set.copyOf(elevatorIds);
         this.simulation = new TestManager(false, this.elevatorIds);
-        this.subscriptions = new int[elevatorIds.size() + 1];
-        subscriptions[0] = Topics.ALL;
-        int index = 1;
-        for (int id = 1; id <= ELEVATORS; id++) {
-            if (this.elevatorIds.contains(id)) subscriptions[index++] = id;
-        }
         this.fireStatusOwner = fireStatusOwner;
     }
 
@@ -80,8 +73,12 @@ public final class BusTestController implements CommandCenterApi, AutoCloseable 
         next.connect(new InetSocketAddress(host, port), 2000);
         next.setSoTimeout(2000);
         send(Message.of(Protocol.REGISTER, 0, 0));
+        Message registration = Protocol.readMessage(next.getInputStream());
+        if (registration == null || registration.topic() != Protocol.REGISTER || registration.subtopic() == 0) {
+            throw new IOException("Bus registration failed");
+        }
         for (int topic : new int[] {Topics.FIRE, Topics.ELEVATOR_COMMAND}) {
-            for (int id : subscriptions) send(Message.of(Protocol.SUBSCRIBE, topic, id));
+            send(Message.of(Protocol.SUBSCRIBE, topic, Topics.ALL));
         }
         nextSnapshot = 0;
         System.out.println("Java test controller connected to bus at " + host + ":" + port);
@@ -93,14 +90,13 @@ public final class BusTestController implements CommandCenterApi, AutoCloseable 
             if (socket == null) connect();
             if (stopped) return;
             for (int topic : new int[] {Topics.FIRE, Topics.ELEVATOR_COMMAND}) {
-                for (int id : subscriptions) {
-                    for (int n = 0; n < 32; n++) {
-                        send(Message.of(Protocol.GET, topic, id));
-                        Message m = Protocol.readMessage(socket.getInputStream());
-                        if (m == null) throw new EOFException("Bus disconnected");
-                        if (m.topic() == Protocol.NO_MESSAGE) break;
-                        if (m.subtopic() != Topics.ALL || id == Topics.ALL) command(m);
-                    }
+                for (int n = 0; n < 32; n++) {
+                    send(Message.of(Protocol.GET, topic, Topics.ALL));
+                    Message m = Protocol.readMessage(socket.getInputStream());
+                    if (m == null) throw new EOFException("Bus disconnected");
+                    if (m.topic() == Protocol.NO_MESSAGE) break;
+                    if (m.topic() != topic) throw new IOException("Unexpected reply to GET " + topic);
+                    command(m);
                 }
             }
             // Send the latest status once a second, including after a reconnect.
@@ -115,18 +111,16 @@ public final class BusTestController implements CommandCenterApi, AutoCloseable 
     }
 
     private void command(Message m) {
+        if (m.payload(1) > 1) return;
         if (m.topic() == Topics.FIRE) {
+            if (m.subtopic() != Topics.NONE) return;
             if (m.flag(1)) test.set(true);
             else reset.set(true);
         } else if (m.topic() == Topics.ELEVATOR_COMMAND) {
-            int first = m.subtopic() == Topics.ALL ? 1 : m.subtopic();
-            int last = m.subtopic() == Topics.ALL ? ELEVATORS : first;
-            if (first < 1 || last > ELEVATORS) return;
-            for (int id = first; id <= last; id++) {
-                if (!elevatorIds.contains(id)) continue;
-                if (m.flag(1)) back[id - 1].set(true);
-                else out[id - 1].set(true);
-            }
+            int id = m.subtopic();
+            if (!elevatorIds.contains(id)) return;
+            if (m.flag(1)) back[id - 1].set(true);
+            else out[id - 1].set(true);
         } else return;
         System.out.println("Java test controller received command " + m);
     }

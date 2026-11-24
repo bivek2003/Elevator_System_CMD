@@ -17,6 +17,13 @@ public interface CommandCenterApi {
     void setServiceStatus(int elevatorId, ServiceStatus status);
     void setFireStatus(FireStatus status);
 
+    // A bus manager can mark each source stale without changing its last reported value.
+    // Harness adapters only publish values, so they can keep these default methods.
+    default void setCabinStatusFresh(int elevatorId, boolean fresh) { }
+    default void setDoorStatusFresh(int elevatorId, boolean fresh) { }
+    default void setServiceStatusFresh(int elevatorId, boolean fresh) { }
+    default void setFireStatusFresh(boolean fresh) { }
+
     /**
      * Poll operator actions. Each method atomically returns and clears its pending flag:
      * true once after a press, then false until the next press. Repeated presses before
