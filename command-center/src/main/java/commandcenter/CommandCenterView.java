@@ -3,6 +3,7 @@ package commandcenter;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
+import javafx.animation.PauseTransition;
 import javafx.application.Platform;
 import javafx.css.PseudoClass;
 import javafx.geometry.HPos;
@@ -16,6 +17,7 @@ import javafx.scene.layout.ColumnConstraints;
 import javafx.scene.layout.GridPane;
 import javafx.scene.shape.Circle;
 import javafx.scene.shape.Polygon;
+import javafx.util.Duration;
 
 /**
  * JavaFX Command Center screen: one grid with the fire controls in the top row and one column per
@@ -48,8 +50,12 @@ public class CommandCenterView implements CommandCenterApi {
         Direction direction = Direction.NONE;
         DoorStatus door = DoorStatus.CLOSED;
         boolean obstruction, overload;
+        boolean cabinFresh, doorFresh, serviceFresh;
+        boolean cabinKnown, doorKnown, serviceKnown;
         boolean pending;                             // service command sent, new status not reported yet
+        boolean retryAllowed;
         ServiceStatus pendingTarget;
+        final PauseTransition retryDelay = new PauseTransition(Duration.seconds(15));
         final AtomicBoolean takeOutOfService = new AtomicBoolean();
         final AtomicBoolean returnToService = new AtomicBoolean();
 
@@ -63,6 +69,9 @@ public class CommandCenterView implements CommandCenterApi {
         Elevator(int id) {
             this.id = id;
             title = label("Elevator " + id, "elevator-title");
+            retryDelay.setOnFinished(ev -> {
+                if (pending) { retryAllowed = true; render(this); }
+            });
         }
 
         /** The column from top to bottom. */
@@ -77,6 +86,7 @@ public class CommandCenterView implements CommandCenterApi {
     private final Label fireAlarm = box("Fire Alarm");
     private final Elevator[] elevators = new Elevator[ELEVATORS];
     private FireStatus fire = FireStatus.NORMAL;
+    private boolean fireFresh, fireKnown;
     private final AtomicBoolean fireResetPending = new AtomicBoolean();
     private final AtomicBoolean fireTestPending = new AtomicBoolean();
 
@@ -131,19 +141,19 @@ public class CommandCenterView implements CommandCenterApi {
 
     @Override public void setCurrentFloor(int id, int floor) {
         Elevator e = elevator(id);
-        ui(() -> { e.floor = floor; render(e); });
+        ui(() -> { e.floor = floor; e.cabinKnown = true; e.cabinFresh = true; render(e); });
     }
 
     @Override public void setDirection(int id, Direction d) {
         Elevator e = elevator(id);
         Objects.requireNonNull(d);
-        ui(() -> { e.direction = d; render(e); });
+        ui(() -> { e.direction = d; e.cabinKnown = true; e.cabinFresh = true; render(e); });
     }
 
     @Override public void setDoorStatus(int id, DoorStatus s) {
         Elevator e = elevator(id);
         Objects.requireNonNull(s);
-        ui(() -> { e.door = s; render(e); });
+        ui(() -> { e.door = s; e.doorKnown = true; e.doorFresh = true; render(e); });
     }
 
     @Override public void setObstruction(int id, boolean active) {
@@ -162,26 +172,64 @@ public class CommandCenterView implements CommandCenterApi {
         Objects.requireNonNull(s);
         ui(() -> {
             e.service = s;
-            if (s == e.pendingTarget) { e.pending = false; e.pendingTarget = null; }
+            e.serviceKnown = true;
+            e.serviceFresh = true;
+            if (s == e.pendingTarget) {
+                e.pending = false;
+                e.pendingTarget = null;
+                e.retryAllowed = false;
+                e.retryDelay.stop();
+            }
             render(e);
         });
     }
 
     @Override public void setFireStatus(FireStatus s) {
         Objects.requireNonNull(s);
-        ui(() -> { fire = s; renderFire(); });
+        ui(() -> { fire = s; fireKnown = true; fireFresh = true; renderFire(); });
+    }
+
+    @Override public void setCabinStatusFresh(int id, boolean fresh) {
+        Elevator e = elevator(id);
+        ui(() -> { e.cabinFresh = fresh; render(e); });
+    }
+
+    @Override public void setDoorStatusFresh(int id, boolean fresh) {
+        Elevator e = elevator(id);
+        ui(() -> { e.doorFresh = fresh; render(e); });
+    }
+
+    @Override public void setServiceStatusFresh(int id, boolean fresh) {
+        Elevator e = elevator(id);
+        ui(() -> {
+            e.serviceFresh = fresh;
+            if (!fresh && e.pending) {
+                e.retryAllowed = true;
+                e.retryDelay.stop();
+            }
+            render(e);
+        });
+    }
+
+    @Override public void setFireStatusFresh(boolean fresh) {
+        ui(() -> { fireFresh = fresh; renderFire(); });
     }
 
     // ---- behaviour ----------------------------------------------------------
 
     /** Asks the manager for the opposite service state; the button stays lit amber until it reports back. */
     private void onServiceButton(Elevator e) {
-        if (e.pending) return;
-        e.pending = true;
-        e.pendingTarget = e.service == ServiceStatus.IN_SERVICE
-                ? ServiceStatus.OUT_OF_SERVICE : ServiceStatus.IN_SERVICE;
+        if (!e.serviceFresh || (e.pending && !e.retryAllowed)) return;
+        if (!e.pending) {
+            e.pending = true;
+            e.pendingTarget = e.service == ServiceStatus.IN_SERVICE
+                    ? ServiceStatus.OUT_OF_SERVICE : ServiceStatus.IN_SERVICE;
+        }
+        // Retry the same requested state; never assume an unconfirmed command completed.
+        e.retryAllowed = false;
+        e.retryDelay.playFromStart();
         render(e);
-        if (e.service == ServiceStatus.IN_SERVICE) e.takeOutOfService.set(true);
+        if (e.pendingTarget == ServiceStatus.OUT_OF_SERVICE) e.takeOutOfService.set(true);
         else e.returnToService.set(true);
     }
 
@@ -190,30 +238,47 @@ public class CommandCenterView implements CommandCenterApi {
         Tone dim = out ? Tone.MUTED : Tone.PLAIN;   // an out-of-service column is dimmed
 
         if (e.pending) {
-            show(e.serviceButton, out ? "Returning to service…" : "Taking out of service…", Tone.CAUTION);
+            String action = e.pendingTarget == ServiceStatus.IN_SERVICE
+                    ? e.retryAllowed ? "Retry return to service" : "Returning to service…"
+                    : e.retryAllowed ? "Retry out of service" : "Taking out of service…";
+            show(e.serviceButton, action, Tone.CAUTION);
+        } else if (!e.serviceFresh) {
+            show(e.serviceButton, e.serviceKnown ? "Service: Stale" : "Service: Unknown", Tone.CAUTION);
         } else {
             show(e.serviceButton, out ? "Return to service" : "Take out of service", out ? Tone.OK : Tone.PLAIN);
         }
-        e.serviceButton.setDisable(e.pending);
+        e.serviceButton.setDisable((e.pending && !e.retryAllowed) || !e.serviceFresh);
 
-        e.upArrow.pseudoClassStateChanged(ON, e.direction == Direction.UP);
-        e.downArrow.pseudoClassStateChanged(ON, e.direction == Direction.DOWN);
+        e.upArrow.pseudoClassStateChanged(ON, e.cabinFresh && e.direction == Direction.UP);
+        e.downArrow.pseudoClassStateChanged(ON, e.cabinFresh && e.direction == Direction.DOWN);
         setTone(e.upArrow, dim);
         setTone(e.downArrow, dim);
-        show(e.floorDisplay, e.floor > 0 ? Integer.toString(e.floor) : "–", dim);
+        show(e.floorDisplay, e.cabinFresh && e.floor > 0 ? Integer.toString(e.floor) : "–", dim);
 
-        show(e.directionBox, switch (e.direction) {
+        show(e.directionBox, !e.cabinFresh ? e.cabinKnown ? "Direction: Stale" : "Direction: Unknown" : switch (e.direction) {
             case UP -> "Up";
             case DOWN -> "Down";
             case NONE -> "Stopped";
-        }, out ? Tone.MUTED : e.direction == Direction.NONE ? Tone.PLAIN : Tone.OK);
+        }, !e.cabinFresh ? Tone.CAUTION : out ? Tone.MUTED : e.direction == Direction.NONE ? Tone.PLAIN : Tone.OK);
         setTone(e.spacerBox, dim);
-        show(e.doorBox, e.door == DoorStatus.OPEN ? "Door: Open" : "Door: Closed", dim);
+        show(e.doorBox, !e.doorFresh ? e.doorKnown ? "Door: Stale" : "Door: Unknown" : switch (e.door) {
+            case OPEN -> "Door: Open";
+            case CLOSED -> "Door: Closed";
+            case TRANSITION -> "Door: Transition";
+        }, e.doorFresh ? dim : Tone.CAUTION);
+        e.obstructionBox.setText(e.doorFresh ? "Obstruction" : e.doorKnown ? "Obstruction: Stale" : "Obstruction: Unknown");
+        e.overloadBox.setText(e.doorFresh ? "Overload" : e.doorKnown ? "Overload: Stale" : "Overload: Unknown");
         showLamp(e.obstructionBox, e.obstruction, out);
         showLamp(e.overloadBox, e.overload, out);
     }
 
     private void renderFire() {
+        String status = switch (fire) {
+            case NORMAL -> "Normal";
+            case TEST -> "TEST";
+            case ALARM -> "ALARM";
+        };
+        fireAlarm.setText(!fireKnown ? "Fire: Unknown" : "Fire: " + status + (fireFresh ? "" : " (stale)"));
         setTone(fireAlarm, switch (fire) {
             case NORMAL -> Tone.PLAIN;
             case TEST -> Tone.CAUTION;

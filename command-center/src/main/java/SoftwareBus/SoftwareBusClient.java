@@ -19,7 +19,7 @@ public class SoftwareBusClient implements Runnable{
     private final InputStream in;
     private final OutputStream out;
 
-    private final int id;
+    private int id = 0;
 
     private record TopicKey(int topic, int subtopic) {}
 
@@ -29,14 +29,12 @@ public class SoftwareBusClient implements Runnable{
 
     private boolean running = true;
 
-    public SoftwareBusClient(Socket socket, MessageBus bus, int id) throws IOException {
+    public SoftwareBusClient(Socket socket, MessageBus bus) throws IOException {
         this.socket = socket;
         this.bus = bus;
 
         this.in = socket.getInputStream();
         this.out = socket.getOutputStream();
-
-        this.id = id;
     }
 
     // Runs the listening loop for the connected client
@@ -48,43 +46,52 @@ public class SoftwareBusClient implements Runnable{
             while (running) {
                 try {
                     Message message = Protocol.readMessage(in);
+                    // null pointer error checking
+                    if (message == null) {
+                        throw new NullPointerException("ERROR! message is null! message must never be null!");
+                    }
                     // Handle subscription methods here:
-                    if (message.topic() == Protocol.REGISTER) {
-                        // register client id with bus
-                        System.out.printf("Received REGISTER from client %d%n", id);
-                    } else if (message.topic() == Protocol.SUBSCRIBE) {
-                        // parse subtopic byte as topic and last byte of body as subtopic
-                        int topic = message.subtopic();
-                        int subtopic = message.body()[Message.BODY_SIZE - 1] & 0xFF;
+                    switch (message.topic()) {
+                        case Protocol.REGISTER -> {
+                            this.id = register();
+                            Protocol.writeMessage(out, Message.of(Protocol.REGISTER, id, 0));
+                            if (id == 0) {
+                                System.out.println("REGISTER failed: no IDs available");
+                            } else {
+                                System.out.printf("Registered client with ID %d%n", id);
+                            }
+                        }
+                        case Protocol.SUBSCRIBE -> {
+                            // parse subtopic byte as topic and last byte of body as subtopic
+                            int topic = message.subtopic();
+                            int subtopic = message.body()[Message.BODY_SIZE - 1] & 0xFF;
 
-                        System.out.printf("Received SUBSCRIBE from client %d: Topic %d, Subtopic %d%n", id, topic, subtopic);
+                            System.out.printf("Received SUBSCRIBE from client %d: Topic %d, Subtopic %d%n", id, topic, subtopic);
 
-                        subscribe(topic, subtopic);
+                            subscribe(topic, subtopic);
+                        }
+                        case Protocol.UNSUBSCRIBE -> {
+                            // Similar to above but used to remove topic
+                            int topic = message.subtopic();
+                            int subtopic = message.body()[Message.BODY_SIZE - 1] & 0xFF;
 
-                    } else if (message.topic() == Protocol.UNSUBSCRIBE) {
-                        // Similar to above but used to remove topic
-                        int topic = message.subtopic();
-                        int subtopic = message.body()[Message.BODY_SIZE - 1] & 0xFF;
+                            System.out.printf("Received UNSUBSCRIBE from client %d: Topic %d, Subtopic %d%n", id, topic, subtopic);
 
-                        System.out.printf("Received UNSUBSCRIBE from client %d: Topic %d, Subtopic %d%n", id, topic, subtopic);
+                            unsubscribe(topic, subtopic);
+                        }
+                        case Protocol.GET -> {
+                            // Parse the message and call the getMessage function
+                            int topic = message.subtopic();
+                            int subtopic = message.body()[Message.BODY_SIZE - 1] & 0xFF;
 
-                        unsubscribe(topic, subtopic);
-
-                    } else if (message.topic() == Protocol.GET) {
-                        // Parse the message and call the getMessage function
-                        int topic = message.subtopic();
-                        int subtopic = message.body()[Message.BODY_SIZE - 1] & 0xFF;
-
-                        System.out.printf("Received GET from client %d: Topic %d, Subtopic %d%n", id, topic, subtopic);
-
-                        getMessage(topic, subtopic);
-
-                    } else if (Protocol.isCommand(message.topic())) {
-                        System.out.printf("Unknown command 0x%X from client %d%n", message.topic(), id);
-
-                    } else {
-                        // If not a special message, broadcast to all other connections
-                        publish(message);
+                            if (MessageBus.DEBUG) {
+                                System.out.printf("Received GET from client %d: Topic %d, Subtopic %d%n", id, topic, subtopic);
+                            }
+                            getMessage(topic, subtopic);
+                        }
+                        default ->
+                            // If not a special message, broadcast to all other connections
+                            publish(message);
                     }
 
                 } catch (IOException e) {
@@ -94,7 +101,9 @@ public class SoftwareBusClient implements Runnable{
         } catch (IOException e) {
             System.out.println("Client connection error: " + e.getMessage());
         } finally {
-            // Remove client upon disconnect
+            if (id != 0) {
+                bus.deregisterDevice(id);
+            }
             bus.removeClient(this);
         }
     }
@@ -114,28 +123,36 @@ public class SoftwareBusClient implements Runnable{
         topicQueues.remove(key);
     }
 
+    private int register() {
+        if (id != 0) {
+            return id;              // already registered: keep the same ID
+        }
+        try {
+            return bus.registerDevice();
+        } catch (IllegalStateException e) {
+            return 0;               // no IDs left; 0 tells the component it failed
+        }
+    }
+
     private void publish(Message m) {
         bus.broadcastFromClient(m, this);
     }
 
-    // Takes a message and puts it in the correct queue
+    // Puts a message in every subscription queue it matches.
+    // Subtopic 0 is a wildcard on either side: a subscription with subtopic 0 gets
+    // every elevator, and a message published with subtopic 0 reaches every subscription.
+    // If a queue is full, the oldest message is dropped to make room for the new one.
     public void pushMessage(Message m) {
-        int topic = m.topic();
-        int subtopic = m.subtopic();
-
-        if (subtopic == 0) {
-            // Broadcast to all subscriptions for this topic
-            for (var entry : topicQueues.entrySet()) {
-                if (entry.getKey().topic() == topic) {
-                    entry.getValue().offer(m);
+        for (var entry : topicQueues.entrySet()) {
+            TopicKey key = entry.getKey();
+            if (m.matches(key.topic(), key.subtopic())) {
+                BlockingQueue<Message> queue = entry.getValue();
+                while (!queue.offer(m)) {
+                    Message dropped = queue.poll();   // full: discard the oldest
+                    if (MessageBus.DEBUG && dropped != null) {
+                        System.out.printf("Queue full for client %d, dropped oldest: %s%n", id, dropped);
+                    }
                 }
-            }
-        } else {
-            // Exact subscription
-            BlockingQueue<Message> exact = topicQueues.get(new TopicKey(topic, subtopic));
-
-            if (exact != null) {
-                exact.offer(m);
             }
         }
     }
@@ -158,6 +175,7 @@ public class SoftwareBusClient implements Runnable{
 
     // closes i/o and socket
     public void close() throws IOException {
+        bus.removeClient(this);
         running = false; // kill while loop
         // kill i/o streams
         out.flush();

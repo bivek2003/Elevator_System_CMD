@@ -1,3 +1,3 @@
 package commandcenter;
 
-public enum DoorStatus { OPEN, CLOSED }
+public enum DoorStatus { OPEN, CLOSED, TRANSITION }

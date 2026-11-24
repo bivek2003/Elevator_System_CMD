@@ -1,9 +1,9 @@
 Software Bus sources copied without modifications from:
 https://github.com/Wallyhoo/CS460_T03_ElevatorProject
-Commit: dcc3948d101a8294c71e93eb9737a214ab39d480
+Commit: 44402531af830541001fc74b478beeeb62c95def
 
 src/main/java/SoftwareBus/ and src/main/java/Utilities/ contain the original
-upstream Java files, including SBMain. Do not edit these files.
+upstream Java files, including SBMain and DeviceRegister. Do not edit these files.
 
 src/test/java/VirtualRouter/ contains the original upstream Virtual Router files,
 unchanged, for isolated distributed testing only. The router is not part of the
@@ -18,7 +18,8 @@ of the copied sources and license. From command-center/, verify with:
 
     shasum -a 256 -c third-party/software-bus/SHA256SUMS
 
-Upstream limitations remain unchanged: client disconnects can print exceptions,
-there is no bus shutdown API, and RouterLink currently makes one connection
-attempt despite its comment mentioning reconnection. Start the router first;
-restart the subsystem if its bus-to-router connection is lost.
+This revision returns an assigned-ID reply to REGISTER. Subtopic ALL is a
+wildcard on subscriptions, so clients use one queue per topic. RouterLink retries
+failed/dropped connections every two seconds. Publications while disconnected
+are dropped and the outgoing queue is cleared on reconnect. Client disconnects
+can print exceptions and the bus server has no shutdown API.

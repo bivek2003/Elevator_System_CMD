@@ -20,8 +20,6 @@ public class SoftwareBusServer {
         try (ServerSocket serverSocket = new ServerSocket(listenPort)) {
             System.out.println("Server listening on port " + listenPort);
 
-            int id = 0;
-
             // Listen loop
             while (true) {
                 Socket socket = serverSocket.accept();
@@ -29,13 +27,11 @@ public class SoftwareBusServer {
                 System.out.println("Client connected: " + socket.getRemoteSocketAddress());
 
                 // Create a new client and attach them to the internal bus
-                SoftwareBusClient client = new SoftwareBusClient(socket, bus, id);
+                SoftwareBusClient client = new SoftwareBusClient(socket, bus);
 
                 // Launch a new thread for the client
                 Thread thread = new Thread(client);
                 thread.start();
-
-                id++;
             }
         }
     }

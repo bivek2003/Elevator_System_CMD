@@ -18,6 +18,7 @@ public class DistributedBusCheck {
     private static class PanelState implements CommandCenterApi {
         final AtomicIntegerArray floors = new AtomicIntegerArray(5);
         final AtomicIntegerArray updates = new AtomicIntegerArray(5);
+        final AtomicIntegerArray cabinFresh = new AtomicIntegerArray(5);
         final AtomicBoolean test = new AtomicBoolean(), reset = new AtomicBoolean();
         final AtomicBoolean out = new AtomicBoolean(), back = new AtomicBoolean();
         volatile FireStatus fire;
@@ -30,6 +31,7 @@ public class DistributedBusCheck {
         public void setOverload(int id, boolean active) { }
         public void setServiceStatus(int id, ServiceStatus service) { if (id == 4) service4 = service; }
         public void setFireStatus(FireStatus status) { fire = status; }
+        public void setCabinStatusFresh(int id, boolean fresh) { cabinFresh.set(id, fresh ? 1 : 0); }
         public boolean fireTest() { return test.getAndSet(false); }
         public boolean fireReset() { return reset.getAndSet(false); }
         public boolean takeOutOfService(int id) { return id == 4 && out.getAndSet(false); }
@@ -56,16 +58,19 @@ public class DistributedBusCheck {
         int panelPort = freePort();
         try {
             String java = Path.of(System.getProperty("java.home"), "bin", "java").toString();
-            router = new ProcessBuilder(java, "-cp", System.getProperty("java.class.path"),
-                    "VirtualRouter.VRMain", Integer.toString(routerPort))
-                    .redirectErrorStream(true).redirectOutput(logs.resolve("router.log").toFile()).start();
-            await(() -> portReady(routerPort), "upstream Virtual Router ready");
+            // Start the applications before the router to exercise the upstream retry loop.
             BusConnection.open(panelPort, new String[] {"localhost", Integer.toString(routerPort)});
             PanelState panel = new PanelState();
             manager = new SoftwareBusManager("localhost", panelPort);
             manager.start(panel);
             test1 = startHarness("Test1", routerPort, logs.resolve("test1.log"));
             test2 = startHarness("Test2", routerPort, logs.resolve("test2.log"));
+            await(() -> routerAttemptFailed(logs.resolve("test1.log"))
+                    && routerAttemptFailed(logs.resolve("test2.log")), "buses retry while router is absent");
+            router = new ProcessBuilder(java, "-cp", System.getProperty("java.class.path"),
+                    "VirtualRouter.VRMain", Integer.toString(routerPort))
+                    .redirectErrorStream(true).redirectOutput(logs.resolve("router.log").toFile()).start();
+            await(() -> portReady(routerPort), "upstream Virtual Router ready");
             await(() -> panel.floors.get(1) > 0 && panel.floors.get(2) > 0
                     && panel.floors.get(3) > 0 && panel.floors.get(4) > 0, "status from both remote buses");
             checkUnsubscribe(panelPort);
@@ -80,9 +85,21 @@ public class DistributedBusCheck {
             }
             panel.back.set(true);
             await(() -> panel.service4 == ServiceStatus.IN_SERVICE, "Test2 return to service");
+            stopHarness(router);
+            await(() -> panel.cabinFresh.get(1) == 0 && panel.cabinFresh.get(4) == 0,
+                    "router loss makes telemetry stale");
+            int beforeRouter1 = panel.updates.get(1), beforeRouter4 = panel.updates.get(4);
+            router = new ProcessBuilder(java, "-cp", System.getProperty("java.class.path"),
+                    "VirtualRouter.VRMain", Integer.toString(routerPort))
+                    .redirectErrorStream(true).redirectOutput(logs.resolve("router-restart.log").toFile()).start();
+            await(() -> panel.updates.get(1) > beforeRouter1 && panel.updates.get(4) > beforeRouter4
+                    && panel.cabinFresh.get(1) == 1 && panel.cabinFresh.get(4) == 1,
+                    "all bus links reconnect after router restart");
             stopHarness(test2);
             int before = panel.updates.get(1);
             await(() -> panel.updates.get(1) > before, "Test1 continues after Test2 stops");
+            await(() -> panel.cabinFresh.get(4) == 0 && panel.cabinFresh.get(1) == 1,
+                    "only stopped harness telemetry becomes stale");
             int previous = panel.updates.get(4);
             test2 = startHarness("Test2", routerPort, logs.resolve("test2-restart.log"));
             await(() -> panel.updates.get(4) > previous, "Test2 reconnects after restarting");
@@ -93,6 +110,11 @@ public class DistributedBusCheck {
             stopHarness(test2);
             stopHarness(router);
         }
+    }
+
+    private static boolean routerAttemptFailed(Path log) {
+        try { return Files.exists(log) && Files.readString(log).contains("Router link down"); }
+        catch (Exception e) { throw new RuntimeException(e); }
     }
 
     private static Process startHarness(String name, int peerPort, Path log) throws Exception {
@@ -124,6 +146,10 @@ public class DistributedBusCheck {
         try (Socket observer = new Socket("localhost", port)) {
             observer.setSoTimeout(2000);
             Protocol.writeMessage(observer.getOutputStream(), Message.of(Protocol.REGISTER, 0, 0));
+            Message registration = Protocol.readMessage(observer.getInputStream());
+            if (registration == null || registration.topic() != Protocol.REGISTER || registration.subtopic() == 0) {
+                throw new AssertionError("Observer registration failed");
+            }
             Protocol.writeMessage(observer.getOutputStream(), Message.of(Protocol.SUBSCRIBE, Topics.CABIN_STATUS, 4));
             await(() -> {
                 try { return getPosition(observer).topic() == Topics.CABIN_STATUS; }

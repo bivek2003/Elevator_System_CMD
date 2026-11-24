@@ -4,6 +4,7 @@ import Utilities.Message;
 import Utilities.Protocol;
 
 import java.io.*;
+import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -28,90 +29,107 @@ public class RouterLink implements Runnable {
     private final int port;
     private final BlockingQueue<Message> sendQueue = new LinkedBlockingQueue<>();
     private Socket socket;
-    private InputStream in;
-    private OutputStream out;
+    private volatile boolean connected = false;
     private volatile boolean running = true;
 
-    RouterLink(MessageBus bus, String host, int port) {
+    public RouterLink(MessageBus bus, String host, int port) {
         this.bus = bus;
         this.host = host;
         this.port = port;
     }
 
+    // Called by the bus for every local publication
     public void send(Message m) {
-        int topic = m.topic();
-        int subtopic = m.subtopic();
-        long value = m.value();
-
-        if (m != null) {
-            System.out.printf("Pushing Message: Topic %d, Subtopic %d, Value %d%n", topic, subtopic, value);
-            sendQueue.offer(m);
+        if (m == null) {
+            return;
         }
+        if (!connected) {
+            if (MessageBus.DEBUG) {
+                System.out.println("Router not connected, dropping: " + m);
+            }
+            return;
+        }
+        sendQueue.offer(m);
     }
 
     @Override
     public void run() {
         bus.addLink(this);
-
-        Thread writerThread = null;
-
         try {
-            socket = new Socket(host, port);
-
-            out = socket.getOutputStream();
-            in = socket.getInputStream();
-
-            writerThread = new Thread(() -> {
+            while (running) {
                 try {
-                    while (running && !socket.isClosed()) {
-                        // wait for a message
-                        Message m = sendQueue.take();
-
-                        System.out.printf("Sending to router: Topic %d, Subtopic %d, Value %d%n", m.topic(), m.subtopic(), m.value());
-                        Protocol.writeMessage(out, m);
-                    }
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
+                    connectAndServe();
                 } catch (IOException e) {
-                    System.out.println("Router write error: " + e.getMessage());
-
-                    // Unblock the reader thread too
-                    try {
-                        socket.close();
-                    } catch (IOException ignored) {}
+                    if (running) {
+                        System.out.println("Router link down (" + e.getMessage() + "), retrying in "
+                                + RETRY_MS / 1000 + " s");
+                    }
                 }
-            });
-
-            writerThread.start();
-
-            while (running && !socket.isClosed()) {
-                // Read and broadcast incoming messages
-                Message m = Protocol.readMessage(in);
-
-                if (m == null) {
+                if (!running) {
                     break;
                 }
-
-                bus.broadcastFromRouter(m, this);
+                try {
+                    Thread.sleep(RETRY_MS);
+                } catch (InterruptedException e) {
+                    break;
+                }
             }
-        } catch (IOException e) {
-            System.out.println("Router connection error: " + e.getMessage());
         } finally {
-            running = false;
 
-            // Interrupt the writer if blocked on take()
-            if (writerThread != null) {
-                writerThread.interrupt();
-            }
-
-            // Remove client upon disconnect
             bus.removeLink(this);
         }
 
     }
 
-    void close() {
+    // One connection: connect, then read until the connection breaks.
+    private void connectAndServe() throws IOException {
+        Socket s = new Socket();
+        s.connect(new InetSocketAddress(host, port), CONNECT_TIMEOUT_MS);
+        socket = s;
+        InputStream in = s.getInputStream();
+        OutputStream out = s.getOutputStream();
+
+        sendQueue.clear();
+        connected = true;
+        System.out.println("Connected to router at " + host + ":" + port);
+
+        Thread writer = new Thread(() -> {
+            try {
+                while (!s.isClosed()) {
+                    Message m = sendQueue.take();   // wait for a message
+                    if (MessageBus.DEBUG) {
+                        System.out.println("Sending to router: " + m);
+                    }
+                    Protocol.writeMessage(out, m);
+                }
+            } catch (InterruptedException e) {
+                // reader finished; stop quietly
+            } catch (IOException e) {
+                System.out.println("Router write error: " + e.getMessage());
+                try { s.close(); } catch (IOException ignored) {}   // unblocks the reader
+            }
+        }, "router-writer");
+        writer.setDaemon(true);
+        writer.start();
+
+        try {
+            while (running) {
+                Message m = Protocol.readMessage(in);
+                if (m == null) {
+                    throw new EOFException("router closed the connection");
+                }
+                bus.broadcastFromRouter(m, this);
+            }
+        } finally {
+            connected = false;
+            writer.interrupt();
+            try { s.close(); } catch (IOException ignored) {}
+        }
+    }
+
+    public void close() {
         running = false;
+        connected = false;
         Socket s = socket;
         if (s != null) {
             try { s.close(); } catch (IOException ignored) {}
